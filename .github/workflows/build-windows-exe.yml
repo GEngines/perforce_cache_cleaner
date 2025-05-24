@@ -28,6 +28,9 @@ jobs:
         run: |
           pyinstaller --onefile --add-data "resources;resources" --name "P4 Cache Cleaner" p4p_cleaner_advanced.py
 
+      - name: Check secret availability
+        run: echo "Secret present:${{ secrets.RELEASE_TOKEN != '' }}"
+
       - name: Upload EXE to Release
         uses: softprops/action-gh-release@v2
         with:
