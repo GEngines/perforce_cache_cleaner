@@ -5,6 +5,7 @@ A tool to analyze files in a given path and automatically delete old files based
 ## Features
 
 - GUI for easy interaction
+- Command-line interface (CLI) support for automation
 - Logging to disk for auditing
 - Progress indication while analyzing files
 - Dry Run mode (provides estimates without deleting data, helpful for previewing actions)
@@ -38,25 +39,54 @@ A tool to analyze files in a given path and automatically delete old files based
 
 ## Usage
 
-1. **Start the application**
-   ```bash
-   python p4p_cleaner_advanced.py
-   ```
-   - The GUI will launch.
+### Launching the GUI
 
-2. **Configure in the GUI**
-   - Select the cache path.
-   - Set the low and high disk space thresholds (%).
-   - Check "Dry Run" if you want a simulation (no files will be deleted).
-   - Click "Start Cleaning" to begin. Progress and logs will be displayed in the GUI.
+To use the graphical interface:
+```bash
+python p4p_cleaner_advanced.py
+```
+- The GUI will launch.  
+- Select the cache path.
+- Set the low and high disk space thresholds (%).
+- Check "Dry Run" if you want a simulation (no files will be deleted).
+- Click "Start Cleaning" to begin. Progress and logs will be displayed in the GUI.
 
-3. **Review Logs**
-   - Logs are saved to disk for your reference and auditing.
+### Command-Line Usage
 
-> **Note:** There are no command-line arguments for this tool; all configuration is performed through the GUI.
+You can also run the cleaner in headless (CLI) mode for scripting, automation, or remote/server use:
+
+```bash
+python p4p_cleaner_advanced.py --path /your/cache/path --low 20 --high 30 --dry-run
+```
+
+**Arguments:**
+- `--path` (required for CLI): Path to the cache directory to analyze and clean.
+- `--low`: Minimum required free disk space percentage before cleaning (default: 20).
+- `--high`: Target free disk space percentage after cleaning (default: 30).
+- `--dry-run`: Perform a dry run (no files will be deleted, just a report).
+
+**Example:**
+
+Dry run (nothing is deleted):
+```bash
+python p4p_cleaner_advanced.py --path /p4cache --low 20 --high 30 --dry-run
+```
+
+Actual cleaning (files will be deleted as needed):
+```bash
+python p4p_cleaner_advanced.py --path /p4cache --low 20 --high 30
+```
+
+## Logging
+
+- All actions and progress are logged to disk at:
+  ```
+  %APPDATA%/P4PCleaner/cleaner.log   # On Windows
+  ./P4PCleaner/cleaner.log           # On Linux/macOS
+  ```
 
 ## Support
+
 For questions or issues, please open an issue in this repository.
-   
 
 ![image](https://github.com/user-attachments/assets/dffa66ba-0f21-4dd3-8130-a1338c8c5dfe)
