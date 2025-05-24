@@ -498,6 +498,7 @@ def main():
     else:
         # GUI mode
         app = QApplication(sys.argv)
+        app.setWindowIcon(QIcon("resources/icons/icon.png"))  # App icon
         window = P4PCleanUI()
         window.show()
         sys.exit(app.exec_())
