@@ -32,7 +32,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.exe
-          update_existing: true
-          tag_name: ${{ github.event.release.tag_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
