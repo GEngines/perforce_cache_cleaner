@@ -500,6 +500,7 @@ def main():
         app = QApplication(sys.argv)
         app.setWindowIcon(QIcon("resources/icons/icon.png"))  # App icon
         window = P4PCleanUI()
+        window.resize(650, 900)
         window.show()
         sys.exit(app.exec_())
 
