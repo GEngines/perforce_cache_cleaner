@@ -25,8 +25,18 @@ logging.basicConfig(
 
 EXCLUDE_FILES = {"p4p", "p4p.exe", "pdb.lbr", "p4p.conf", "p4ps.exe", "svcinst.exe"}
 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.abspath(os.path.dirname(__file__))
+    return os.path.join(base_path, relative_path)
+
+
 def load_stylesheet(path):
-    with open(path, "r", encoding="utf-8") as f:
+    with open(resource_path(path), "r", encoding="utf-8") as f:
         return f.read()
 
 
@@ -305,8 +315,10 @@ class P4PCleanUI(QWidget):
         self.setLayout(main_layout)
 
         # Usage example in your P4PCleanUI class:
-        self.light_stylesheet = load_stylesheet("resources/css/light_mode.css")
-        self.dark_stylesheet = load_stylesheet("resources/css/dark_mode.css")
+        self.light_stylesheet = load_stylesheet(resource_path(
+            "resources/css/light_mode.css"))
+        self.dark_stylesheet = load_stylesheet(resource_path(
+            "resources/css/dark_mode.css"))
 
         # Set default (light) theme
         self.setStyleSheet(self.light_stylesheet)
@@ -408,7 +420,7 @@ def main():
     else:
         # GUI mode
         app = QApplication(sys.argv)
-        app.setWindowIcon(QIcon("resources/icons/icon.png"))  # App icon
+        app.setWindowIcon(QIcon(resource_path("resources/icons/icon.png")))  # App icon
         window = P4PCleanUI()
         window.resize(650, 900)
         window.show()
