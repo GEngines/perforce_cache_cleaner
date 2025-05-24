@@ -370,6 +370,14 @@ class P4PCleanUI(QWidget):
         self.setStyleSheet(self.light_stylesheet)
         self.append_log(f"Logs are also saved to: {LOG_FILE}")
 
+    def closeEvent(self, event):
+        # If a cleaning thread is running, request it to stop
+        cleaner = getattr(self, "cleaner", None)
+        if cleaner and cleaner.isRunning():
+            cleaner.terminate()  # Forcefully stop the QThread
+            cleaner.wait()
+        event.accept()
+
     def toggle_theme(self):
         """
         Switch between light and dark mode.
