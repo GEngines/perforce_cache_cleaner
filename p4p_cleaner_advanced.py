@@ -12,105 +12,6 @@ from PySide2.QtWidgets import (
 from PySide2.QtGui import QIcon, QFont
 from PySide2.QtCore import Qt, Signal, QObject
 
-DARK_STYLESHEET = """
-QWidget {
-    background: #232629;
-    color: #e0e0e0;
-}
-QGroupBox {
-    border: 1px solid #444;
-    border-radius: 8px;
-    margin-top: 10px;
-    font-weight: bold;
-    padding: 10px;
-    background: #18191a;
-}
-QLineEdit, QSpinBox, QTextEdit {
-    background: #2d2f31;
-    color: #e0e0e0;
-    padding: 4px 8px;
-    border-radius: 4px;
-    border: 1px solid #555;
-}
-QPushButton {
-    background-color: #3a6ea5;
-    color: white;
-    border-radius: 6px;
-    padding: 8px 20px;
-    font-size: 16px;
-}
-QPushButton:disabled {
-    background-color: #666;
-}
-QProgressBar {
-    background: #2d2f31;
-    border: 1px solid #444;
-    border-radius: 5px;
-    text-align: center;
-}
-QProgressBar::chunk {
-    background-color: #3a6ea5;
-    width: 20px;
-}
-QCheckBox {
-    padding: 3px;
-}
-QTextEdit {
-    background: #202124;
-    border: 1px solid #444;
-    color: #f2f2f2;
-}
-"""
-
-LIGHT_STYLESHEET = """
-QWidget {
-    background: #f4f6fb;
-}
-QGroupBox {
-    border: 1px solid #cccccc;
-    border-radius: 8px;
-    margin-top: 10px;
-    font-weight: bold;
-    padding: 10px;
-    background: #fff;
-}
-QLineEdit, QSpinBox, QTextEdit {
-    background: #fff;
-    padding: 4px 8px;
-    border-radius: 4px;
-    border: 1px solid #ccc;
-    color: #000;
-}
-QPushButton {
-    background-color: #2d89ef;
-    color: white;
-    border-radius: 6px;
-    padding: 8px 20px;
-    font-size: 16px;
-}
-QPushButton:disabled {
-    background-color: #999;
-}
-QProgressBar {
-    background: #f7f9fa;
-    border: 1px solid #aaa;
-    border-radius: 5px;
-    text-align: center;
-}
-QProgressBar::chunk {
-    background-color: #2d89ef;
-    width: 20px;
-}
-QCheckBox {
-    padding: 3px;
-}
-QTextEdit {
-    background: #f7f9fa;
-    border: 1px solid #ddd;
-    color: #222;
-}
-"""
-
 # Setup AppData log file
 APPDATA_DIR = os.path.join(os.environ.get("APPDATA", "."), "P4PCleaner")
 os.makedirs(APPDATA_DIR, exist_ok=True)
@@ -123,6 +24,11 @@ logging.basicConfig(
 )
 
 EXCLUDE_FILES = {"p4p", "p4p.exe", "pdb.lbr", "p4p.conf", "p4ps.exe", "svcinst.exe"}
+
+def load_stylesheet(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
 
 class Logger(QObject):
     """Qt signal-based logger for progress and log messages."""
@@ -398,8 +304,12 @@ class P4PCleanUI(QWidget):
         main_layout.addWidget(logs_group)
         self.setLayout(main_layout)
 
+        # Usage example in your P4PCleanUI class:
+        self.light_stylesheet = load_stylesheet("resources/css/light_mode.css")
+        self.dark_stylesheet = load_stylesheet("resources/css/dark_mode.css")
+
         # Set default (light) theme
-        self.setStyleSheet(LIGHT_STYLESHEET)
+        self.setStyleSheet(self.light_stylesheet)
 
         # Connect signals (assumes logger is a global object)
         logger.log_signal.connect(self.append_log)
@@ -412,10 +322,10 @@ class P4PCleanUI(QWidget):
         """Switch between light and dark mode."""
         self.dark_mode = not self.dark_mode
         if self.dark_mode:
-            self.setStyleSheet(DARK_STYLESHEET)
+            self.setStyleSheet(self.dark_stylesheet)
             self.theme_button.setText("☀️ Light Mode")
         else:
-            self.setStyleSheet(LIGHT_STYLESHEET)
+            self.setStyleSheet(self.light_stylesheet)
             self.theme_button.setText("🌙 Dark Mode")
 
     def on_progress_update(self, value):
