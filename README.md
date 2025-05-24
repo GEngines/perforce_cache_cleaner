@@ -11,3 +11,5 @@ Upcoming Features:
 - Dashboard
 - Scheduler Support
 - Central Dashboard to monitor mulitple instances
+
+![image](https://github.com/user-attachments/assets/dffa66ba-0f21-4dd3-8130-a1338c8c5dfe)
