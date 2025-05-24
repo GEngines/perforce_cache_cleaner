@@ -26,7 +26,7 @@ jobs:
       - name: Build EXE with PyInstaller (with icon and resources)
         working-directory: ${{ github.workspace }}
         run: |
-          pyinstaller --onefile --add-data "resources;resources" --name "P4 Cache Cleaner" p4p_cleaner_advanced.py
+          pyinstaller --onefile -w --add-data "resources;resources" --name "P4PCacheCleaner" p4p_cleaner_advanced.py
 
       - name: Upload EXE to Release
         uses: softprops/action-gh-release@v2
