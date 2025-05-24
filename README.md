@@ -1,93 +1,113 @@
-# perforce_cache_cleaner
+# P4 Cleaner
 
-A tool to analyze files in a given path and automatically delete old files based on last access date, helping you recover disk space until a required free percentage is met.
+P4 Cleaner is a tool to monitor your files and clean up old files to recover disk space.
 
 ## Features
 
-- GUI for easy interaction
-- Command-line interface (CLI) support for automation
-- Logging to disk for auditing
-- Progress indication while analyzing files
-- Dry Run mode (provides estimates without deleting data, helpful for previewing actions)
+- Scans and cleans Perforce cache folders to free up disk space.
+- Bundled resources for configuration or additional data.
+- Provides a ready-to-use Windows executable with a custom icon (no Python installation required).
+- Automated GitHub Actions workflow to build and attach the Windows `.exe` to releases.
 
-## Upcoming Features
+---
 
-- Dashboard
-- Scheduler support
-- Central dashboard to monitor multiple instances
+## Download
 
-## Installation
+- Download the latest Windows executable [`P4Cleaner.exe`](https://github.com/GEngines/perforce_cache_cleaner/releases/latest) from the [Releases](https://github.com/GEngines/perforce_cache_cleaner/releases) page.
+- The executable bundles all required resources and uses a custom icon.
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/GEngines/perforce_cache_cleaner.git
-   cd perforce_cache_cleaner
-   ```
-
-2. **Set up a Python virtual environment (recommended)**
-   ```bash
-   python -m venv venv
-   source venv/bin/activate           # On Linux/macOS
-   .\venv\Scripts\activate            # On Windows
-   ```
-
-3. **Install required dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-   > If `requirements.txt` does not exist, install required packages manually as specified in the documentation or code comments.
+---
 
 ## Usage
 
-### Launching the GUI
+### As a Windows Executable
 
-To use the graphical interface:
-```bash
-python p4p_cleaner_advanced.py
-```
-- The GUI will launch.  
-- Select the cache path.
-- Set the low and high disk space thresholds (%).
-- Check "Dry Run" if you want a simulation (no files will be deleted).
-- Click "Start Cleaning" to begin. Progress and logs will be displayed in the GUI.
+1. Download `P4Cleaner.exe` from the [latest release](https://github.com/GEngines/perforce_cache_cleaner/releases/latest).
+2. (Optional) Place the executable in the desired directory.
+3. Double-click to run, or launch from the command line.
 
-### Command-Line Usage
+### From Source (Python)
 
-You can also run the cleaner in headless (CLI) mode for scripting, automation, or remote/server use:
+1. **Clone the repository:**
+    ```sh
+    git clone https://github.com/GEngines/perforce_cache_cleaner.git
+    cd perforce_cache_cleaner
+    ```
 
-```bash
-python p4p_cleaner_advanced.py --path /your/cache/path --low 20 --high 30 --dry-run
-```
+2. **Install dependencies:**
+    ```sh
+    pip install -r requirements.txt
+    ```
 
-**Arguments:**
-- `--path` (required for CLI): Path to the cache directory to analyze and clean.
-- `--low`: Minimum required free disk space percentage before cleaning (default: 20).
-- `--high`: Target free disk space percentage after cleaning (default: 30).
-- `--dry-run`: Perform a dry run (no files will be deleted, just a report).
+3. **Run the script:**
+    ```sh
+    python perforce_cache_cleaner.py
+    ```
 
-**Example:**
+#### Accessing Resources in Source and Executable
 
-Dry run (nothing is deleted):
-```bash
-python p4p_cleaner_advanced.py --path /p4cache --low 20 --high 30 --dry-run
-```
+This project uses a utility function to access resources in a way that works both for local development and when packaged as an executable with PyInstaller:
 
-Actual cleaning (files will be deleted as needed):
-```bash
-python p4p_cleaner_advanced.py --path /p4cache --low 20 --high 30
+```python
+from resource_helper import resource_path
+
+with open(resource_path("resources/myfile.txt")) as f:
+    data = f.read()
 ```
 
-## Logging
+---
 
-- All actions and progress are logged to disk at:
-  ```
-  %APPDATA%/P4PCleaner/cleaner.log   # On Windows
-  ./P4PCleaner/cleaner.log           # On Linux/macOS
-  ```
+## Building the Windows Executable
 
-## Support
+### Prerequisites
 
-For questions or issues, please open an issue in this repository.
+- Python 3.11 or newer
+- [PyInstaller](https://pyinstaller.org/en/stable/)
+- Your custom icon, e.g., `app_icon.ico`, and a `resources` folder in the project root
+
+### Build Steps (Manual)
+
+```sh
+pip install pyinstaller
+pyinstaller --onefile --icon=app_icon.ico --add-data "resources;resources" --name P4Cleaner perforce_cache_cleaner.py
+```
+
+- The resulting `P4Cleaner.exe` will appear in the `dist/` directory.
+- The executable will include all files from the `resources` folder and use the specified icon.
+
+---
+
+## Automated Builds & Releases
+
+This repository uses GitHub Actions to automatically build and attach the Windows executable to each release.
+
+- When you publish a new release on GitHub, the workflow:
+    1. Installs dependencies and PyInstaller.
+    2. Builds a Windows `.exe` with your icon and resources folder.
+    3. Uploads the executable as an asset on the release.
+
+#### Workflow File
+
+The workflow file is located at `.github/workflows/build-windows-exe.yml` and uses the following build command:
+
+```yaml
+pyinstaller --onefile --icon=app_icon.ico --add-data "resources;resources" --name P4Cleaner perforce_cache_cleaner.py
+```
+
+---
+
+## Contributing
+
+- Fork the repository and create a feature branch.
+- Ensure requirements are updated for any new dependencies.
+- Use the `resource_helper.py` utility for loading bundled resources.
+- Open a pull request with a clear description of your changes.
+
+---
+
+## License
+
+[MIT](LICENSE)
 
 ![image](https://github.com/user-attachments/assets/35d80d32-ed1e-4e4f-a00a-32876cd989d4)
 
