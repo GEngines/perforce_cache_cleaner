@@ -89,4 +89,5 @@ python p4p_cleaner_advanced.py --path /p4cache --low 20 --high 30
 
 For questions or issues, please open an issue in this repository.
 
-![image](https://github.com/user-attachments/assets/dffa66ba-0f21-4dd3-8130-a1338c8c5dfe)
+![image](https://github.com/user-attachments/assets/35d80d32-ed1e-4e4f-a00a-32876cd989d4)
+
