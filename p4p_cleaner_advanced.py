@@ -4,11 +4,112 @@ import threading
 import shutil
 import logging
 import argparse
+
 from PySide2.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QPushButton,
-    QFileDialog, QTextEdit, QProgressBar, QHBoxLayout, QSpinBox, QLineEdit, QCheckBox
+    QFileDialog, QTextEdit, QProgressBar, QHBoxLayout, QSpinBox, QLineEdit, QCheckBox, QGroupBox
 )
-from PySide2.QtCore import Signal, QObject
+from PySide2.QtGui import QIcon, QFont
+from PySide2.QtCore import Qt, Signal, QObject
+
+DARK_STYLESHEET = """
+QWidget {
+    background: #232629;
+    color: #e0e0e0;
+}
+QGroupBox {
+    border: 1px solid #444;
+    border-radius: 8px;
+    margin-top: 10px;
+    font-weight: bold;
+    padding: 10px;
+    background: #18191a;
+}
+QLineEdit, QSpinBox, QTextEdit {
+    background: #2d2f31;
+    color: #e0e0e0;
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid #555;
+}
+QPushButton {
+    background-color: #3a6ea5;
+    color: white;
+    border-radius: 6px;
+    padding: 8px 20px;
+    font-size: 16px;
+}
+QPushButton:disabled {
+    background-color: #666;
+}
+QProgressBar {
+    background: #2d2f31;
+    border: 1px solid #444;
+    border-radius: 5px;
+    text-align: center;
+}
+QProgressBar::chunk {
+    background-color: #3a6ea5;
+    width: 20px;
+}
+QCheckBox {
+    padding: 3px;
+}
+QTextEdit {
+    background: #202124;
+    border: 1px solid #444;
+    color: #f2f2f2;
+}
+"""
+
+LIGHT_STYLESHEET = """
+QWidget {
+    background: #f4f6fb;
+}
+QGroupBox {
+    border: 1px solid #cccccc;
+    border-radius: 8px;
+    margin-top: 10px;
+    font-weight: bold;
+    padding: 10px;
+    background: #fff;
+}
+QLineEdit, QSpinBox, QTextEdit {
+    background: #fff;
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+    color: #000;
+}
+QPushButton {
+    background-color: #2d89ef;
+    color: white;
+    border-radius: 6px;
+    padding: 8px 20px;
+    font-size: 16px;
+}
+QPushButton:disabled {
+    background-color: #999;
+}
+QProgressBar {
+    background: #f7f9fa;
+    border: 1px solid #aaa;
+    border-radius: 5px;
+    text-align: center;
+}
+QProgressBar::chunk {
+    background-color: #2d89ef;
+    width: 20px;
+}
+QCheckBox {
+    padding: 3px;
+}
+QTextEdit {
+    background: #f7f9fa;
+    border: 1px solid #ddd;
+    color: #222;
+}
+"""
 
 # Setup AppData log file
 APPDATA_DIR = os.path.join(os.environ.get("APPDATA", "."), "P4PCleaner")
@@ -201,106 +302,151 @@ class CacheCleaner(threading.Thread):
             logger.progress_signal.emit(value)
         # In headless mode, we can skip GUI progress updates
 
+
 class P4PCleanUI(QWidget):
-    """Qt GUI for the Perforce Proxy Cache Cleaner."""
+    """Qt GUI for the Perforce Proxy Cache Cleaner with modernized design and dark mode toggle."""
     def __init__(self):
-        """Initialize the main window and layout of the GUI."""
         super().__init__()
         self.setWindowTitle("Perforce Proxy Cache Cleaner")
-        self.resize(600, 400)
+        self.resize(650, 500)
+        self.dark_mode = False
 
-        self.layout = QVBoxLayout()
+        # Main layout
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(20)
+        main_layout.setContentsMargins(30, 30, 30, 30)
 
-        self.path_label = QLabel("Cache Path:")
+        # Theme toggle button
+        self.theme_button = QPushButton("🌙 Dark Mode")
+        self.theme_button.setCheckable(True)
+        self.theme_button.setMaximumWidth(140)
+        self.theme_button.clicked.connect(self.toggle_theme)
+        main_layout.addWidget(self.theme_button, alignment=Qt.AlignRight)
+
+        # Header
+        header = QLabel("Perforce Proxy Cache Cleaner")
+        header.setFont(QFont("Segoe UI", 20, QFont.Bold))
+        header.setAlignment(Qt.AlignCenter)
+        subheader = QLabel("Free your disk by automatically removing old cache files.")
+        subheader.setAlignment(Qt.AlignCenter)
+        subheader.setStyleSheet("color: #666; margin-bottom: 10px;")
+        main_layout.addWidget(header)
+        main_layout.addWidget(subheader)
+
+        # Group: Cache Path
+        path_group = QGroupBox("Cache Location")
+        path_layout = QHBoxLayout()
         self.path_input = QLineEdit()
+        self.path_input.setPlaceholderText("Select cache directory...")
         self.browse_button = QPushButton("Browse")
+        self.browse_button.setIcon(QIcon.fromTheme("folder-open"))
         self.browse_button.clicked.connect(self.browse_path)
+        path_layout.addWidget(self.path_input)
+        path_layout.addWidget(self.browse_button)
+        path_group.setLayout(path_layout)
 
+        # Group: Cleaning Options
+        options_group = QGroupBox("Cleaning Options")
+        options_layout = QHBoxLayout()
         self.low_thresh_input = QSpinBox()
         self.low_thresh_input.setRange(1, 100)
         self.low_thresh_input.setValue(20)
-        self.low_thresh_input.setPrefix("Low %: ")
-
+        self.low_thresh_input.setSuffix("% (min free)")
         self.high_thresh_input = QSpinBox()
         self.high_thresh_input.setRange(1, 100)
         self.high_thresh_input.setValue(30)
-        self.high_thresh_input.setPrefix("High %: ")
+        self.high_thresh_input.setSuffix("% (target free)")
+        self.dry_run_checkbox = QCheckBox("Dry Run (simulate only)")
+        options_layout.addWidget(self.low_thresh_input)
+        options_layout.addWidget(self.high_thresh_input)
+        options_layout.addWidget(self.dry_run_checkbox)
+        options_group.setLayout(options_layout)
 
-        self.dry_run_checkbox = QCheckBox("Dry Run (no actual deletion)")
-
+        # Start Button
         self.start_button = QPushButton("Start Cleaning")
+        self.start_button.setStyleSheet(
+            "QPushButton {background-color: #2d89ef; color: white; border-radius: 6px; padding: 8px 20px; font-size: 16px;} QPushButton:disabled {background-color: #999;}"
+        )
+        self.start_button.setFixedHeight(40)
         self.start_button.clicked.connect(self.start_cleaning)
 
+        # Progress
+        progress_group = QGroupBox("Progress")
+        progress_layout = QVBoxLayout()
+        self.progress_label = QLabel("Waiting to start...")
+        self.progress_label.setStyleSheet("color: #888;")
         self.progress = QProgressBar()
+        self.progress.setAlignment(Qt.AlignCenter)
+        progress_layout.addWidget(self.progress_label)
+        progress_layout.addWidget(self.progress)
+        progress_group.setLayout(progress_layout)
+
+        # Logs
+        logs_group = QGroupBox("Logs")
+        logs_layout = QVBoxLayout()
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
+        self.log_output.setFont(QFont("Consolas", 10))
+        logs_layout.addWidget(self.log_output)
+        logs_group.setLayout(logs_layout)
 
-        path_layout = QHBoxLayout()
-        path_layout.addWidget(self.path_input)
-        path_layout.addWidget(self.browse_button)
+        # Add to main layout
+        main_layout.addWidget(path_group)
+        main_layout.addWidget(options_group)
+        main_layout.addWidget(self.start_button)
+        main_layout.addWidget(progress_group)
+        main_layout.addWidget(logs_group)
+        self.setLayout(main_layout)
 
-        thresh_layout = QHBoxLayout()
-        thresh_layout.addWidget(self.low_thresh_input)
-        thresh_layout.addWidget(self.high_thresh_input)
+        # Set default (light) theme
+        self.setStyleSheet(LIGHT_STYLESHEET)
 
-        self.layout.addWidget(self.path_label)
-        self.layout.addLayout(path_layout)
-        self.layout.addLayout(thresh_layout)
-        self.layout.addWidget(self.dry_run_checkbox)
-        self.layout.addWidget(self.start_button)
-        self.layout.addWidget(self.progress)
-        self.layout.addWidget(self.log_output)
-
-        self.setLayout(self.layout)
-
+        # Connect signals (assumes logger is a global object)
         logger.log_signal.connect(self.append_log)
         logger.progress_signal.connect(self.on_progress_update)
         logger.done_signal.connect(self.cleaning_done)
 
         self.append_log(f"Logs are also saved to: {LOG_FILE}")
 
-    def on_progress_update(self, value):
-        """Update the progress bar in the GUI.
-
-        Args:
-            value (int): Progress percentage or -1 for indeterminate.
-        """
-        if value == -1:
-            # Indeterminate mode (busy)
-            self.progress.setRange(0, 0)
+    def toggle_theme(self):
+        """Switch between light and dark mode."""
+        self.dark_mode = not self.dark_mode
+        if self.dark_mode:
+            self.setStyleSheet(DARK_STYLESHEET)
+            self.theme_button.setText("☀️ Light Mode")
         else:
-            # Determinate mode
+            self.setStyleSheet(LIGHT_STYLESHEET)
+            self.theme_button.setText("🌙 Dark Mode")
+
+    def on_progress_update(self, value):
+        if value == -1:
+            self.progress.setRange(0, 0)
+            self.progress_label.setText("Analyzing files...")
+        else:
             if self.progress.maximum() == 0:
                 self.progress.setRange(0, 100)
             self.progress.setValue(value)
+            self.progress_label.setText(f"Progress: {value}%")
 
     def browse_path(self):
-        """Open a file dialog to select the cache directory."""
         dir_path = QFileDialog.getExistingDirectory(self, "Select Cache Directory")
         if dir_path:
             self.path_input.setText(dir_path)
 
     def append_log(self, message):
-        """Append a log message to the text area in the GUI.
-
-        Args:
-            message (str): The message to append.
-        """
         self.log_output.append(message)
         logging.info(message)
 
     def start_cleaning(self):
-        """Start the cleaning process when the user clicks the start button."""
         path = self.path_input.text().strip()
         if not os.path.isdir(path):
-            self.append_log("Invalid path.")
+            self.append_log("<span style='color:red;font-weight:bold'>Invalid path.</span>")
             return
 
-        # Clear the log output to start fresh
         self.log_output.clear()
-
         self.progress.setValue(0)
-        self.start_button.setEnabled(False)  # Disable button while cleaning
+        self.progress_label.setText("Starting...")
+        self.start_button.setEnabled(False)
         dry_run = self.dry_run_checkbox.isChecked()
         cleaner = CacheCleaner(
             path,
@@ -311,9 +457,10 @@ class P4PCleanUI(QWidget):
         cleaner.start()
 
     def cleaning_done(self):
-        """Called when cleaning is finished to re-enable UI controls."""
-        self.append_log("Cleaning operation finished.")
-        self.start_button.setEnabled(True)  # Re-enable button after cleaning
+        self.append_log("<b>Cleaning operation finished.</b>")
+        self.progress_label.setText("Done.")
+        self.start_button.setEnabled(True)
+
 
 def run_headless(path, low_thresh, high_thresh, dry_run):
     """Run the cache cleaner in CLI mode without GUI.
