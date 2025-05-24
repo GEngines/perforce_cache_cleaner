@@ -1,5 +1,6 @@
 # perforce_cache_cleaner
-A remaster of an existing  and old p4p_cleaner by adding UI and also using Python 3.
+
+Analyse the data in the provided the path, and start deleting them based on the last access date first to recover space until the required percentage is met.
 
 Features:
 - GUI
