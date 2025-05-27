@@ -4,18 +4,20 @@ import shutil
 import logging
 import argparse
 import threading
+import time
+import sqlite3
 
 from PySide2.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QPushButton,
     QFileDialog, QTextEdit, QProgressBar, QHBoxLayout, QSpinBox, QLineEdit, QCheckBox, QGroupBox
 )
-from PySide2.QtGui import QIcon, QFont
+from PySide2.QtGui import QIcon, QFont, QTextCursor
 from PySide2.QtCore import Qt, Signal, QThread
 
 # Setup AppData log file
 APPDATA_DIR = os.path.join(os.environ.get("APPDATA", "."), "P4PCleaner")
 os.makedirs(APPDATA_DIR, exist_ok=True)
-LOG_FILE = os.path.join(APPDATA_DIR, "cleaner.log")
+LOG_FILE = os.path.join(APPDATA_DIR, f"cleaner_{time.strftime('%Y%m%d-%H%M%S')}.log")
 
 logging.basicConfig(
     filename=LOG_FILE,
@@ -155,13 +157,13 @@ class BaseCacheCleaner:
             on_log (callable): Function to call with log messages.
             on_progress (callable): Function to call with progress updates.
         """
+
         try:
             mode = "DRY RUN" if self.dry_run else "ACTUAL DELETION"
             on_log(f"Starting cache clean operation ({mode})...")
 
             disk_total, disk_free, disk_free_percent = self.get_disk_info(self.path)
-            on_log(
-                f"Total disk: {self.get_mb(disk_total)} | Free: {self.get_mb(disk_free)} | Free %: {disk_free_percent:.2f}%")
+            on_log(f"Total disk: {self.get_mb(disk_total)} | Free: {self.get_mb(disk_free)} | Free %: {disk_free_percent:.2f}%")
 
             if disk_free_percent >= self.low_thresh:
                 on_log("Disk space above threshold, no action taken.")
@@ -169,40 +171,72 @@ class BaseCacheCleaner:
                 return
 
             on_progress(-1)
-            on_log("Counting files to scan...")
-            total_files = self.count_files(self.path)
-            on_log(f"Total files to scan: {total_files}")
+            on_log("Setting up SQLite database for file metadata...")
 
-            on_progress(0)
-            on_log("Scanning files...")
-            files = list(self.scan_dir(self.path, total_files, on_progress, on_log))
-            on_log(f"Found {len(files)} files to consider.")
-            files.sort(key=lambda x: x[0])  # Sort by last access time
+            db_path = os.path.join(APPDATA_DIR, 'p4cleaner.db')
+            # clean up any existing db.
+            if os.path.exists(db_path):
+                os.remove(db_path)
+
+            conn = sqlite3.connect(db_path)
+            c = conn.cursor()
+            c.execute("CREATE TABLE files (atime REAL, size INTEGER, path TEXT)")
+            conn.commit()
+
+            # Scan and insert metadata
+            count = 0
+            batch = []
+            for atime, size, path in self.scan_dir(self.path, None, None, on_log):
+                batch.append((atime, size, path))
+                count += 1
+                if len(batch) >= 1000:
+                    c.executemany("INSERT INTO files VALUES (?, ?, ?)", batch)
+                    conn.commit()
+                    batch.clear()
+            if batch:  # Insert any remaining rows
+                c.executemany("INSERT INTO files VALUES (?, ?, ?)", batch)
+                conn.commit()
+            on_log(f"Indexed {count} files in database.")
 
             disk_free_target = self.high_thresh * disk_total / 100
             size_target = disk_free_target - disk_free
             removed_size = 0
+            deleted = 0
 
-            for i, (_, size, path) in enumerate(files):
-                if removed_size >= size_target:
+            # Query & delete the oldest files until space target is met
+            while removed_size < size_target:
+                c.execute("SELECT atime, size, path FROM files ORDER BY atime ASC LIMIT 100")
+                batch = c.fetchall()
+                if not batch:
                     break
-                try:
-                    if self.dry_run:
-                        on_log(f"Would delete: {path}")
-                    else:
-                        os.remove(path)
-                        on_log(f"Deleted: {path}")
-                    removed_size += size
-                    percent = int(100 * removed_size / size_target) if size_target > 0 else 100
-                    on_progress(percent)
-                except Exception as e:
-                    on_log(f"Failed to delete: {path} - {e}")
+                for atime, size, path in batch:
+                    if removed_size >= size_target:
+                        break
+                    try:
+                        if self.dry_run:
+                            on_log(f"Would delete: {path}")
+                        else:
+                            os.remove(path)
+                            on_log(f"Deleted: {path}")
+                        removed_size += size
+                        deleted += 1
+                        percent = round(100 * removed_size / size_target, 1) if size_target > 0 else 100.0
+                        on_progress(percent)
+                        # Remove from DB
+                        c.execute("DELETE FROM files WHERE path = ?", (path,))
+                    except Exception as e:
+                        on_log(f"Failed to delete: {path} - {e}")
+                conn.commit()
 
             action = "would be removed" if self.dry_run else "removed"
-            on_log(f"Total of {self.get_mb(removed_size)} {action} to meet target.")
+            on_log(f"Total of {self.get_mb(removed_size)} {action} to meet target. Deleted {deleted} files.")
             on_progress(100)
+            c.close()
+            conn.close()
+            os.remove(db_path)
         except Exception as e:
             on_log(f"Exception occurred: {e}")
+
 
 # --- CLI Threaded Worker ---
 
@@ -238,7 +272,7 @@ class QtCacheCleanerWorker(QThread, BaseCacheCleaner):
     """
     QThread-based cache cleaner for GUI mode, emitting Qt signals for progress and logs.
     """
-    progress_signal = Signal(int)
+    progress_signal = Signal(float)
     log_signal = Signal(str)
     done_signal = Signal()
 
@@ -368,6 +402,7 @@ class P4PCleanUI(QWidget):
         self.light_stylesheet = load_stylesheet(resource_path("resources/css/light_mode.css"))
         self.dark_stylesheet = load_stylesheet(resource_path("resources/css/dark_mode.css"))
         self.setStyleSheet(self.light_stylesheet)
+        self._gui_log_buffer = []  # Add this for storing last 100 lines
         self.append_log(f"Logs are also saved to: {LOG_FILE}")
 
     def closeEvent(self, event):
@@ -401,10 +436,11 @@ class P4PCleanUI(QWidget):
             self.progress.setRange(0, 0)
             self.progress_label.setText("Analyzing files...")
         else:
-            if self.progress.maximum() == 0:
-                self.progress.setRange(0, 100)
-            self.progress.setValue(value)
-            self.progress_label.setText(f"Progress: {value}%")
+            if self.progress.maximum() != PROGRESS_BAR_MAX:
+                self.progress.setRange(0, PROGRESS_BAR_MAX)
+            progress_value = int(value * PROGRESS_CONVERSION_FACTOR)
+            self.progress.setValue(progress_value)
+            self.progress_label.setText(f"Progress: {value:.1f}%")
 
     def browse_path(self):
         """
@@ -417,11 +453,17 @@ class P4PCleanUI(QWidget):
     def append_log(self, message):
         """
         Append a log message to the log output widget and the log file.
-
+        Only the most recent 100 lines are shown in the GUI.
         Args:
             message (str): The message to log.
         """
-        self.log_output.append(message)
+        self._gui_log_buffer.append(message)
+        # Keep only the last 100 messages
+        if len(self._gui_log_buffer) > 100:
+            self._gui_log_buffer = self._gui_log_buffer[-100:]
+        # Update the GUI log display
+        self.log_output.setPlainText("\n".join(self._gui_log_buffer))
+        self.log_output.moveCursor(QTextCursor.End)
         logging.info(message)
 
     def start_cleaning(self):
