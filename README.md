@@ -41,7 +41,7 @@ P4 Cleaner is a tool to monitor your files and clean up old files to recover dis
 
 3. **Run the script:**
     ```sh
-    python perforce_cache_cleaner.py
+    python p4p_cleaner_advanced.py
     ```
 
 ## Command-Line Usage
