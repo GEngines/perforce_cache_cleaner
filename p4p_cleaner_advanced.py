@@ -1,16 +1,17 @@
-import sys
+import argparse
+import json
+import logging
 import os
 import shutil
-import logging
-import argparse
+import sqlite3
+import sys
 import threading
 import time
-import sqlite3
 
 from PySide2.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QLabel, QPushButton,
-    QFileDialog, QTextEdit, QProgressBar, QHBoxLayout, QSpinBox,
-    QLineEdit, QCheckBox, QGroupBox, QRadioButton, QButtonGroup, QListWidget
+    QApplication, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QTextEdit,
+    QProgressBar, QHBoxLayout, QSpinBox, QLineEdit, QCheckBox, QGroupBox, QRadioButton,
+    QButtonGroup, QListWidget, QStatusBar
 )
 from PySide2.QtGui import QIcon, QFont, QTextCursor
 from PySide2.QtCore import Qt, Signal, QThread
@@ -27,6 +28,8 @@ logging.basicConfig(
 )
 
 DEFAULT_EXCLUDE_FILES = {"p4p.exe", "pdb.lbr", "p4p.conf", "p4ps.exe", "svcinst.exe"}
+EXCLUDE_CONFIG_FILE = os.path.join(APPDATA_DIR, "excluded_files.json")
+
 
 def resource_path(relative_path):
     """
@@ -45,6 +48,7 @@ def resource_path(relative_path):
         base_path = os.path.abspath(os.path.dirname(__file__))
     return os.path.join(base_path, relative_path)
 
+
 def load_stylesheet(path):
     """
     Load a Qt stylesheet from file.
@@ -58,12 +62,14 @@ def load_stylesheet(path):
     with open(resource_path(path), "r", encoding="utf-8") as f:
         return f.read()
 
+
 # --- Base Cleaning Logic ---
 
 class BaseCacheCleaner:
     """
     Base class for cache cleaning logic, shared by both threading and QThread workers.
     """
+
     def __init__(self, path,
                  low_thresh,
                  high_thresh,
@@ -89,7 +95,6 @@ class BaseCacheCleaner:
         self.drive_mode = drive_mode
         self.folder_percent_keep = folder_percent_keep
         self.exclude_files = set(exclude_files or [])
-
 
     def get_disk_info(self, path):
         """
@@ -193,7 +198,8 @@ class BaseCacheCleaner:
                 on_log(f"Starting cache clean operation ({mode})...")
 
                 disk_total, disk_free, disk_free_percent = self.get_disk_info(self.path)
-                on_log(f"Total disk: {self.get_mb(disk_total)} | Free: {self.get_mb(disk_free)} | Free %: {disk_free_percent:.2f}%")
+                on_log(
+                    f"Total disk: {self.get_mb(disk_total)} | Free: {self.get_mb(disk_free)} | Free %: {disk_free_percent:.2f}%")
 
                 if disk_free_percent >= self.low_thresh:
                     on_log("Disk space above threshold, no action taken.")
@@ -347,7 +353,9 @@ class ThreadedCacheCleaner(threading.Thread, BaseCacheCleaner):
     """
     Threaded cache cleaner for CLI/headless mode using Python threading.
     """
-    def __init__(self, path, low_thresh, high_thresh, folder_keep_percent, drive_mode, dry_run=False):
+
+    def __init__(self, path, low_thresh, high_thresh, folder_keep_percent, drive_mode, dry_run=False,
+                 exclude_files=[]):
         """
         Initialize the threaded cleaner.
 
@@ -355,19 +363,28 @@ class ThreadedCacheCleaner(threading.Thread, BaseCacheCleaner):
             path (str): The directory to clean.
             low_thresh (int): Minimum required disk free percentage.
             high_thresh (int): Target disk free percentage after cleaning.
+            folder_keep_percent (int): Target disk free percentage after cleaning.
+            drive_mode (bool): Drive mode to use.
             dry_run (bool): If True, simulate cleaning without deleting files.
+            exclude_files (list[str]): Files to exclude.
         """
         threading.Thread.__init__(self)
-        BaseCacheCleaner.__init__(self, path, low_thresh, high_thresh, folder_keep_percent, drive_mode, dry_run)
+        BaseCacheCleaner.__init__(self, path, low_thresh, high_thresh, folder_keep_percent, drive_mode, dry_run,
+                                  exclude_files=list(exclude_files))
+        if exclude_files is None:
+            exclude_files = []
 
     def run(self):
         """
         Run the cleaning logic with print/log output.
         """
+
         def print_and_log(msg):
             print(msg)
             logging.info(msg)
+
         self.clean(print_and_log, lambda p: None)
+
 
 # --- Qt QThread Worker ---
 
@@ -379,7 +396,8 @@ class QtCacheCleanerWorker(QThread, BaseCacheCleaner):
     log_signal = Signal(str)
     done_signal = Signal()
 
-    def __init__(self, path, low_thresh, high_thresh, folder_keep_percent, drive_mode, dry_run=False):
+    def __init__(self, path, low_thresh, high_thresh, folder_keep_percent, drive_mode, dry_run=False,
+                 exclude_files=[]):
         """
         Initialize the QThread worker.
 
@@ -387,7 +405,10 @@ class QtCacheCleanerWorker(QThread, BaseCacheCleaner):
             path (str): The directory to clean.
             low_thresh (int): Minimum required disk free percentage.
             high_thresh (int): Target disk free percentage after cleaning.
+            folder_keep_percent (int): Target disk free percentage after cleaning.
+            drive_mode (bool): Drive mode to use.
             dry_run (bool): If True, simulate cleaning without deleting files.
+            exclude_files (list[str]): Files to exclude.
         """
         QThread.__init__(self)
         BaseCacheCleaner.__init__(self,
@@ -397,7 +418,9 @@ class QtCacheCleanerWorker(QThread, BaseCacheCleaner):
                                   folder_keep_percent,
                                   drive_mode,
                                   dry_run,
-                                  exclude_files=list(self.exclude_files))
+                                  exclude_files=list(exclude_files))
+        if exclude_files is None:
+            exclude_files = []
 
     def run(self):
         """
@@ -406,12 +429,14 @@ class QtCacheCleanerWorker(QThread, BaseCacheCleaner):
         self.clean(self.log_signal.emit, self.progress_signal.emit)
         self.done_signal.emit()
 
+
 # --- GUI ---
 
 class P4PCleanUI(QWidget):
     """
     Qt GUI for the Perforce Proxy Cache Cleaner with modernized design and dark mode toggle.
     """
+
     def __init__(self):
         """
         Initialize the main GUI window and widgets.
@@ -445,7 +470,6 @@ class P4PCleanUI(QWidget):
         main_layout.addWidget(header)
         main_layout.addWidget(subheader)
 
-
         # Group: Cache Path
         path_group = QGroupBox("Cache Location")
 
@@ -459,7 +483,6 @@ class P4PCleanUI(QWidget):
         path_layout.addWidget(self.path_input)
         path_layout.addWidget(self.browse_button)
         path_group.setLayout(path_layout)
-
 
         # Group: Cache Mode Radio
         mode_group = QGroupBox("Cache Type")
@@ -539,11 +562,8 @@ class P4PCleanUI(QWidget):
         # Progress
         progress_group = QGroupBox("Progress")
         progress_layout = QVBoxLayout()
-        self.progress_label = QLabel("Waiting to start...")
-        self.progress_label.setStyleSheet("color: #888;")
         self.progress = QProgressBar()
         self.progress.setAlignment(Qt.AlignCenter)
-        progress_layout.addWidget(self.progress_label)
         progress_layout.addWidget(self.progress)
         progress_group.setLayout(progress_layout)
 
@@ -556,6 +576,10 @@ class P4PCleanUI(QWidget):
         logs_layout.addWidget(self.log_output)
         logs_group.setLayout(logs_layout)
 
+        # Status Bar
+        self.status_bar = QStatusBar()
+        self.status_bar.showMessage("Waiting to start...")
+
         # Add to main layout
         main_layout.addWidget(path_group)
         main_layout.addWidget(mode_group)
@@ -564,6 +588,7 @@ class P4PCleanUI(QWidget):
         main_layout.addWidget(self.start_button)
         main_layout.addWidget(progress_group)
         main_layout.addWidget(logs_group)
+        main_layout.addWidget(self.status_bar)
         self.setLayout(main_layout)
 
         # Connect mode switching to UI update
@@ -627,17 +652,17 @@ class P4PCleanUI(QWidget):
         Update the progress bar and label.
 
         Args:
-            value (int): The progress percentage, or -1 for indeterminate.
+            value (int/float): The progress percentage, or -1 for indeterminate.
         """
         if value == -1:
             self.progress.setRange(0, 0)
-            self.progress_label.setText("Analyzing files...")
+            self.status_bar.showMessage("Analyzing files...")
         else:
             if self.progress.maximum() != 1000:
                 self.progress.setRange(0, 1000)
-            progress_value = int(value * 10)
-            self.progress.setValue(progress_value)
-            self.progress_label.setText(f"Progress: {value:.1f}%")
+            self.progress.setFormat(f"{value:.1f}%")
+            self.progress.setValue(int(value * 10))
+            self.status_bar.showMessage("Processing files...")
 
     def browse_path(self):
         """
@@ -674,7 +699,7 @@ class P4PCleanUI(QWidget):
 
         self.log_output.clear()
         self.progress.setValue(0)
-        self.progress_label.setText("Starting...")
+        self.status_bar.showMessage("Starting...")
         self.start_button.setEnabled(False)
         dry_run = self.dry_run_checkbox.isChecked()
 
@@ -684,7 +709,8 @@ class P4PCleanUI(QWidget):
             self.high_thresh_input.value(),
             self.percent_spin.value(),
             self.drive_radio.isChecked(),
-            dry_run
+            dry_run,
+            self.exclude_files
         )
         self.cleaner.progress_signal.connect(self.on_progress_update)
         self.cleaner.log_signal.connect(self.append_log)
@@ -696,12 +722,13 @@ class P4PCleanUI(QWidget):
         Called when cleaning is finished. Updates the UI.
         """
         self.append_log("<b>Cleaning operation finished.</b>")
-        self.progress_label.setText("Done.")
+        self.status_bar.showMessage("Done.")
         self.start_button.setEnabled(True)
+
 
 # --- CLI entry point ---
 
-def run_headless(path, low_thresh, high_thresh, drive_mode, folder_percent_keep, dry_run):
+def run_headless(path, low_thresh, high_thresh, folder_percent_keep, drive_mode, dry_run, exclude_files):
     """
     Run the cache cleaner in CLI mode without GUI.
 
@@ -709,9 +736,10 @@ def run_headless(path, low_thresh, high_thresh, drive_mode, folder_percent_keep,
         path (str): Directory to clean.
         low_thresh (int): Minimum required disk free percent.
         high_thresh (int): Target disk free percent.
-        drive_mode (bool)
-        folder_percent_keep (float)
+        drive_mode (bool): drive mode if its entire drive or just folder of a bigger drive.
+        folder_percent_keep (int): percentage of the space to be retained.
         dry_run (bool): If True, simulate cleaning.
+        exclude_files (list): list of files to be excluded.
     """
     if not os.path.isdir(path):
         print("Invalid path.")
@@ -720,12 +748,96 @@ def run_headless(path, low_thresh, high_thresh, drive_mode, folder_percent_keep,
         path,
         low_thresh,
         high_thresh,
-        drive_mode,
         folder_percent_keep,
-        dry_run
+        drive_mode,
+        dry_run,
+        exclude_files
     )
     worker.start()
     worker.join()
+
+
+# --- CLI Excluded Files Management ---
+
+def load_exclude_files():
+    """Load excluded files from config, or use default if not present."""
+    if os.path.exists(EXCLUDE_CONFIG_FILE):
+        try:
+            with open(EXCLUDE_CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+    return list(DEFAULT_EXCLUDE_FILES)
+
+
+def save_exclude_files(files):
+    """Save excluded files config."""
+    with open(EXCLUDE_CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(files, f)
+
+
+def cli_show_excluded():
+    exclude_files = load_exclude_files()
+    print("Currently excluded files/patterns:")
+    for i, f in enumerate(exclude_files, 1):
+        print(f" {i}. {f}")
+
+
+def cli_add_excluded(entry):
+    files = load_exclude_files()
+    if entry in files:
+        print(f"Entry '{entry}' already in the excluded list.")
+    else:
+        files.append(entry)
+        save_exclude_files(files)
+        print(f"Added '{entry}' to excluded files.")
+
+
+def cli_remove_excluded(entry):
+    files = load_exclude_files()
+    if entry not in files:
+        print(f"Entry '{entry}' is not in the excluded list.")
+    else:
+        files.remove(entry)
+        save_exclude_files(files)
+        print(f"Removed '{entry}' from excluded files.")
+
+
+def cli_edit_excluded():
+    files = load_exclude_files()
+    print("Current excluded files/patterns:")
+    for i, f in enumerate(files, 1):
+        print(f" {i}. {f}")
+    print("\nOptions:")
+    print("  a <pattern>    Add a pattern")
+    print("  r <pattern>    Remove a pattern")
+    print("  q              Quit")
+    while True:
+        cmd = input("Enter command: ").strip()
+        if not cmd:
+            continue
+        if cmd == "q":
+            break
+        if cmd.startswith("a "):
+            pat = cmd[2:].strip()
+            if pat and pat not in files:
+                files.append(pat)
+                print(f"Added '{pat}'")
+            else:
+                print("Already present or invalid.")
+        elif cmd.startswith("r "):
+            pat = cmd[2:].strip()
+            if pat in files:
+                files.remove(pat)
+                print(f"Removed '{pat}'")
+            else:
+                print("Not present.")
+        else:
+            print("Unknown command.")
+        save_exclude_files(files)
+
 
 def main():
     """
@@ -739,17 +851,44 @@ def main():
     parser.add_argument('--drive-mode', action='store_true', help='Use entire drive mode (default)')
     parser.add_argument('--folder-mode', action='store_true', help='Use folder mode (regulate cache folder size)')
     parser.add_argument('--dry-run', action='store_true', help='Perform a dry run (no files will be deleted)')
+    parser.add_argument('--show-excluded', action='store_true', help='Show excluded files/patterns')
+    parser.add_argument('--add-excluded', type=str, help='Add a file or pattern to excluded files')
+    parser.add_argument('--remove-excluded', type=str, help='Remove a file or pattern from excluded files')
+    parser.add_argument('--edit-excluded', action='store_true', help='Interactively edit the excluded files list')
     args = parser.parse_args()
+
+    # CLI excluded files management
+    if args.show_excluded:
+        cli_show_excluded()
+        return
+    if args.add_excluded:
+        cli_add_excluded(args.add_excluded)
+        return
+    if args.remove_excluded:
+        cli_remove_excluded(args.remove_excluded)
+        return
+    if args.edit_excluded:
+        cli_edit_excluded()
+        return
 
     if args.folder_mode:
         drive_mode = False
     else:
         drive_mode = True
 
+    exclude_files = load_exclude_files()
 
     if args.path:
         # Headless (CLI) mode
-        run_headless(args.path, args.low, args.high, args.dry_run)
+        run_headless(
+            args.path,
+            args.low,
+            args.high,
+            args.percent,
+            drive_mode,
+            args.dry_run,
+            exclude_files=exclude_files
+        )
     else:
         # GUI mode
         app = QApplication(sys.argv)
@@ -758,6 +897,7 @@ def main():
         window.resize(650, 1050)
         window.show()
         sys.exit(app.exec_())
+
 
 if __name__ == "__main__":
     main()
