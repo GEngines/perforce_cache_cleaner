@@ -10,7 +10,7 @@ import sqlite3
 from PySide2.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QPushButton,
     QFileDialog, QTextEdit, QProgressBar, QHBoxLayout, QSpinBox,
-    QLineEdit, QCheckBox, QGroupBox, QRadioButton, QButtonGroup
+    QLineEdit, QCheckBox, QGroupBox, QRadioButton, QButtonGroup, QListWidget
 )
 from PySide2.QtGui import QIcon, QFont, QTextCursor
 from PySide2.QtCore import Qt, Signal, QThread
@@ -26,7 +26,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s: %(message)s"
 )
 
-EXCLUDE_FILES = {"p4p", "p4p.exe", "pdb.lbr", "p4p.conf", "p4ps.exe", "svcinst.exe"}
+DEFAULT_EXCLUDE_FILES = {"p4p.exe", "pdb.lbr", "p4p.conf", "p4ps.exe", "svcinst.exe"}
 
 def resource_path(relative_path):
     """
@@ -69,7 +69,8 @@ class BaseCacheCleaner:
                  high_thresh,
                  folder_percent_keep,
                  drive_mode=True,
-                 dry_run=False):
+                 dry_run=False,
+                 exclude_files=None):
         """
         Initialize the cleaner.
 
@@ -87,6 +88,8 @@ class BaseCacheCleaner:
         self.dry_run = dry_run
         self.drive_mode = drive_mode
         self.folder_percent_keep = folder_percent_keep
+        self.exclude_files = set(exclude_files or [])
+
 
     def get_disk_info(self, path):
         """
@@ -126,7 +129,7 @@ class BaseCacheCleaner:
         count = 0
         for root, dirs, files in os.walk(path):
             for f in files:
-                if f.lower() not in EXCLUDE_FILES:
+                if f.lower() in self.exclude_files:
                     count += 1
         return count
 
@@ -146,7 +149,7 @@ class BaseCacheCleaner:
         scanned = 0
         for root, dirs, files in os.walk(path):
             for f in files:
-                if f.lower() in EXCLUDE_FILES:
+                if f.lower() in self.exclude_files:
                     continue
                 full_path = os.path.join(root, f)
                 try:
@@ -164,7 +167,7 @@ class BaseCacheCleaner:
         file_info = []
         for root, dirs, files in os.walk(self.path):
             for f in files:
-                if f.lower() in EXCLUDE_FILES:
+                if f.lower() in self.exclude_files:
                     continue
                 fp = os.path.join(root, f)
                 try:
@@ -387,7 +390,14 @@ class QtCacheCleanerWorker(QThread, BaseCacheCleaner):
             dry_run (bool): If True, simulate cleaning without deleting files.
         """
         QThread.__init__(self)
-        BaseCacheCleaner.__init__(self, path, low_thresh, high_thresh, folder_keep_percent, drive_mode, dry_run)
+        BaseCacheCleaner.__init__(self,
+                                  path,
+                                  low_thresh,
+                                  high_thresh,
+                                  folder_keep_percent,
+                                  drive_mode,
+                                  dry_run,
+                                  exclude_files=list(self.exclude_files))
 
     def run(self):
         """
@@ -410,6 +420,8 @@ class P4PCleanUI(QWidget):
         self.setWindowTitle("Perforce Proxy Cache Cleaner")
         self.resize(650, 500)
         self.dark_mode = False
+
+        self.exclude_files = list(DEFAULT_EXCLUDE_FILES)
 
         # Main layout
         main_layout = QVBoxLayout()
@@ -490,6 +502,32 @@ class P4PCleanUI(QWidget):
         options_layout.addWidget(self.dry_run_checkbox)
         options_group.setLayout(options_layout)
 
+        # Group: Excluded Files
+        exclude_group = QGroupBox("Excluded Files (do not delete)")
+        exclude_layout = QVBoxLayout()
+
+        self.exclude_list_widget = QListWidget()
+        for item in self.exclude_files:
+            self.exclude_list_widget.addItem(item)
+
+        # Add controls
+        add_layout = QHBoxLayout()
+        self.exclude_input = QLineEdit()
+        self.exclude_input.setPlaceholderText("Add file or pattern...")
+        add_btn = QPushButton("Add")
+        remove_btn = QPushButton("Remove Selected")
+        add_layout.addWidget(self.exclude_input)
+        add_layout.addWidget(add_btn)
+        add_layout.addWidget(remove_btn)
+
+        exclude_layout.addWidget(self.exclude_list_widget)
+        exclude_layout.addLayout(add_layout)
+        exclude_group.setLayout(exclude_layout)
+
+        # Add handlers
+        add_btn.clicked.connect(self.add_exclude_file)
+        remove_btn.clicked.connect(self.remove_exclude_file)
+
         # Start Button
         self.start_button = QPushButton("Start Cleaning")
         self.start_button.setStyleSheet(
@@ -522,6 +560,7 @@ class P4PCleanUI(QWidget):
         main_layout.addWidget(path_group)
         main_layout.addWidget(mode_group)
         main_layout.addWidget(options_group)
+        main_layout.addWidget(exclude_group)
         main_layout.addWidget(self.start_button)
         main_layout.addWidget(progress_group)
         main_layout.addWidget(logs_group)
@@ -558,6 +597,18 @@ class P4PCleanUI(QWidget):
         else:
             self.setStyleSheet(self.light_stylesheet)
             self.theme_button.setText("🌙 Dark Mode")
+
+    def add_exclude_file(self):
+        text = self.exclude_input.text().strip()
+        if text and text not in self.exclude_files:
+            self.exclude_files.append(text)
+            self.exclude_list_widget.addItem(text)
+            self.exclude_input.clear()
+
+    def remove_exclude_file(self):
+        for item in self.exclude_list_widget.selectedItems():
+            self.exclude_files.remove(item.text())
+            self.exclude_list_widget.takeItem(self.exclude_list_widget.row(item))
 
     def update_ui_fields(self):
         if self.drive_radio.isChecked():
@@ -704,7 +755,7 @@ def main():
         app = QApplication(sys.argv)
         app.setWindowIcon(QIcon(resource_path("resources/icons/icon.png")))
         window = P4PCleanUI()
-        window.resize(650, 900)
+        window.resize(650, 1050)
         window.show()
         sys.exit(app.exec_())
 
