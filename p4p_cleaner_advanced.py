@@ -436,9 +436,9 @@ class P4PCleanUI(QWidget):
             self.progress.setRange(0, 0)
             self.progress_label.setText("Analyzing files...")
         else:
-            if self.progress.maximum() != 1000:
-                self.progress.setRange(0, 1000)
-            progress_value = int(value * 10)
+            if self.progress.maximum() != PROGRESS_BAR_MAX:
+                self.progress.setRange(0, PROGRESS_BAR_MAX)
+            progress_value = int(value * PROGRESS_CONVERSION_FACTOR)
             self.progress.setValue(progress_value)
             self.progress_label.setText(f"Progress: {value:.1f}%")
 
