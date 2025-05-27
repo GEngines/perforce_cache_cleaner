@@ -185,12 +185,17 @@ class BaseCacheCleaner:
 
             # Scan and insert metadata
             count = 0
+            batch = []
             for atime, size, path in self.scan_dir(self.path, None, None, on_log):
-                c.execute("INSERT INTO files VALUES (?, ?, ?)", (atime, size, path))
+                batch.append((atime, size, path))
                 count += 1
-                if count % 1000 == 0:
+                if len(batch) >= 1000:
+                    c.executemany("INSERT INTO files VALUES (?, ?, ?)", batch)
                     conn.commit()
-            conn.commit()
+                    batch.clear()
+            if batch:  # Insert any remaining rows
+                c.executemany("INSERT INTO files VALUES (?, ?, ?)", batch)
+                conn.commit()
             on_log(f"Indexed {count} files in database.")
 
             disk_free_target = self.high_thresh * disk_total / 100
