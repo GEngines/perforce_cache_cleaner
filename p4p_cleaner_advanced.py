@@ -4,6 +4,7 @@ import shutil
 import logging
 import argparse
 import threading
+import time
 import sqlite3
 
 from PySide2.QtWidgets import (
@@ -16,7 +17,7 @@ from PySide2.QtCore import Qt, Signal, QThread
 # Setup AppData log file
 APPDATA_DIR = os.path.join(os.environ.get("APPDATA", "."), "P4PCleaner")
 os.makedirs(APPDATA_DIR, exist_ok=True)
-LOG_FILE = os.path.join(APPDATA_DIR, "cleaner.log")
+LOG_FILE = os.path.join(APPDATA_DIR, f"cleaner_{time.strftime('%Y%m%d-%H%M%S')}.log")
 
 logging.basicConfig(
     filename=LOG_FILE,
@@ -214,7 +215,7 @@ class BaseCacheCleaner:
                             on_log(f"Deleted: {path}")
                         removed_size += size
                         deleted += 1
-                        percent = int(100 * removed_size / size_target) if size_target > 0 else 100
+                        percent = round(100 * removed_size / size_target, 1) if size_target > 0 else 100.0
                         on_progress(percent)
                         # Remove from DB
                         c.execute("DELETE FROM files WHERE path = ?", (path,))
@@ -266,7 +267,7 @@ class QtCacheCleanerWorker(QThread, BaseCacheCleaner):
     """
     QThread-based cache cleaner for GUI mode, emitting Qt signals for progress and logs.
     """
-    progress_signal = Signal(int)
+    progress_signal = Signal(float)
     log_signal = Signal(str)
     done_signal = Signal()
 
@@ -430,10 +431,11 @@ class P4PCleanUI(QWidget):
             self.progress.setRange(0, 0)
             self.progress_label.setText("Analyzing files...")
         else:
-            if self.progress.maximum() == 0:
-                self.progress.setRange(0, 100)
-            self.progress.setValue(value)
-            self.progress_label.setText(f"Progress: {value}%")
+            if self.progress.maximum() != 1000:
+                self.progress.setRange(0, 1000)
+            progress_value = int(value * 10)
+            self.progress.setValue(progress_value)
+            self.progress_label.setText(f"Progress: {value:.1f}%")
 
     def browse_path(self):
         """
