@@ -1,4 +1,4 @@
-name: Build Windows EXE and Attach to Release
+name: Build Windows and Linux Binaries and Attach to Release
 
 on:
   release:
@@ -6,7 +6,19 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - os: windows-latest
+            binary_name: P4CacheCleaner-windows
+            artifact_glob: dist/*.exe
+          - os: ubuntu-latest
+            binary_name: P4CacheCleaner-linux
+            artifact_glob: dist/P4CacheCleaner-linux
+
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -23,14 +35,22 @@ jobs:
           pip install pyinstaller
           pip install -r requirements.txt
 
-      - name: Build EXE with PyInstaller (with icon and resources)
+      - name: Build Windows EXE with PyInstaller (with icon and resources)
+        if: matrix.os == 'windows-latest'
         working-directory: ${{ github.workspace }}
         run: |
-          pyinstaller --onefile -w --icon=resources\icons\icon.ico --add-data "resources;resources" --name "P4CacheCleaner" p4p_cleaner_advanced.py
+          pyinstaller --onefile -w --icon=resources\icons\icon.ico --add-data "resources;resources" --name "${{ matrix.binary_name }}" p4p_cleaner_advanced.py
 
-      - name: Upload EXE to Release
+      - name: Build Linux binary with PyInstaller (with resources)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: ${{ github.workspace }}
+        run: |
+          pyinstaller --onefile --add-data "resources:resources" --name "${{ matrix.binary_name }}" p4p_cleaner_advanced.py
+          chmod +x "dist/${{ matrix.binary_name }}"
+
+      - name: Upload binary to Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.exe
+          files: ${{ matrix.artifact_glob }}
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
