@@ -13,6 +13,26 @@ QCheckBox, QRadioButton {
     color: #e0e0e0;
     padding: 3px;
 }
+QCheckBox::indicator, QRadioButton::indicator {
+    width: 15px;
+    height: 15px;
+    border: 2px solid #888;
+    background: #2d2f31;
+}
+QRadioButton::indicator {
+    border-radius: 8px;
+}
+QCheckBox::indicator {
+    border-radius: 3px;
+}
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+    background: #3a6ea5;
+    border-color: #3a6ea5;
+}
+
+QStackedWidget, QStackedWidget > QWidget {
+    background: transparent;
+}
 
 QGroupBox {
     border: 1px solid #444;
@@ -33,12 +53,21 @@ QGroupBox::title {
     color: #e0e0e0;
 }
 
-QLineEdit, QSpinBox {
+QLineEdit {
     background: #2d2f31;
     color: #e0e0e0;
     padding: 4px 8px;
     border-radius: 4px;
     border: 1px solid #555;
+    min-height: 28px;
+}
+QSpinBox {
+    background: #2d2f31;
+    color: #e0e0e0;
+    padding: 4px 22px 4px 8px;
+    border-radius: 4px;
+    border: 1px solid #555;
+    min-height: 28px;
 }
 
 QPushButton {
@@ -50,6 +79,21 @@ QPushButton {
 }
 QPushButton:disabled {
     background-color: #666;
+}
+QPushButton#secondary_btn {
+    background-color: transparent;
+    color: #5a9fd4;
+    border: 1px solid #5a9fd4;
+    border-radius: 4px;
+    padding: 3px 10px;
+    font-size: 12px;
+}
+QPushButton#secondary_btn:disabled {
+    color: #555;
+    border-color: #555;
+}
+QPushButton#secondary_btn:hover {
+    background-color: #1e3a52;
 }
 
 QProgressBar {
@@ -83,6 +127,34 @@ QListWidget::item {
 QListWidget::item:selected {
     background: #3a6ea5;
     color: white;
+}
+
+QLabel#subheader_label {
+    background: transparent;
+    color: #888;
+    font-size: 12px;
+}
+QLabel#hint_label {
+    background: transparent;
+    color: #666;
+    font-size: 11px;
+    font-style: italic;
+}
+
+QPushButton#theme_btn {
+    background: transparent;
+    color: #aaa;
+    border: 1px solid #555;
+    border-radius: 14px;
+    padding: 4px 10px;
+    font-size: 12px;
+}
+QPushButton#theme_btn:hover {
+    background: #2a2c2e;
+    border-color: #777;
+}
+QPushButton#theme_btn:checked {
+    background: #2a2c2e;
 }
 
 QLabel#status_label {

@@ -1,6 +1,7 @@
 import argparse
 import collections
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import fnmatch
 import json
 import logging
 import os
@@ -13,12 +14,11 @@ import time
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QTextEdit,
     QProgressBar, QHBoxLayout, QSpinBox, QLineEdit, QCheckBox, QGroupBox, QRadioButton,
-    QButtonGroup, QListWidget
+    QButtonGroup, QListWidget, QStackedWidget, QDialog, QSizePolicy
 )
 from PySide6.QtGui import QIcon, QFont
 from PySide6.QtCore import Qt, Signal, QThread
 
-# Setup AppData log file
 APPDATA_DIR = os.path.join(os.environ.get("APPDATA", "."), "P4PCleaner")
 os.makedirs(APPDATA_DIR, exist_ok=True)
 LOG_FILE = os.path.join(APPDATA_DIR, f"cleaner_{time.strftime('%Y%m%d-%H%M%S')}.log")
@@ -34,43 +34,18 @@ EXCLUDE_CONFIG_FILE = os.path.join(APPDATA_DIR, "excluded_files.json")
 
 
 def resource_path(relative_path):
-    """
-    Get absolute path to resource, works for dev and for PyInstaller.
-
-    Args:
-        relative_path (str): Relative path to resource.
-
-    Returns:
-        str: Absolute path to resource.
-    """
-    try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
-        base_path = sys._MEIPASS
-    except AttributeError:
-        base_path = os.path.abspath(os.path.dirname(__file__))
+    """Resolve a resource path for both dev and PyInstaller-bundled runs."""
+    base_path = getattr(sys, "_MEIPASS", os.path.abspath(os.path.dirname(__file__)))
     return os.path.join(base_path, relative_path)
 
 
 def load_stylesheet(path):
-    """
-    Load a Qt stylesheet from file.
-
-    Args:
-        path (str): Path to stylesheet file.
-
-    Returns:
-        str: Stylesheet contents.
-    """
     with open(resource_path(path), "r", encoding="utf-8") as f:
         return f.read()
 
 
-# --- Base Cleaning Logic ---
-
 class BaseCacheCleaner:
-    """
-    Base class for cache cleaning logic, shared by both threading and QThread workers.
-    """
+    """Shared cache-cleaning logic used by both the CLI thread and GUI QThread workers."""
 
     def __init__(self, path,
                  low_thresh,
@@ -79,17 +54,6 @@ class BaseCacheCleaner:
                  drive_mode=True,
                  dry_run=False,
                  exclude_files=None):
-        """
-        Initialize the cleaner.
-
-        Args:
-            path (str): The directory to clean.
-            low_thresh (int): Minimum required disk free percentage.
-            high_thresh (int): Target disk free percentage after cleaning.
-            folder_percent_keep (int): Percent of disk free to be kept.
-            drive_mode (bool): If True, keep only drive folders.
-            dry_run (bool): If True, simulate cleaning without deleting files.
-        """
         self.path = path
         self.low_thresh = low_thresh
         self.high_thresh = high_thresh
@@ -98,71 +62,36 @@ class BaseCacheCleaner:
         self.folder_percent_keep = folder_percent_keep
         self.exclude_files = set(exclude_files or [])
         self._stop_event = threading.Event()
+        self.last_plan_path = None
 
     def request_stop(self):
         """Signal the cleaning loop to exit gracefully on its next iteration."""
         self._stop_event.set()
 
     def get_disk_info(self, path):
-        """
-        Get disk usage statistics for the given path.
-
-        Args:
-            path (str): Path to check.
-
-        Returns:
-            tuple: (total_bytes, free_bytes, percent_free)
-        """
         usage = shutil.disk_usage(path)
         return usage.total, usage.free, (usage.free / usage.total) * 100
 
     def get_mb(self, size):
-        """
-        Convert bytes to megabytes as a formatted string.
-
-        Args:
-            size (int): Size in bytes.
-
-        Returns:
-            str: Size in MB.
-        """
         return f"{size / (1024 * 1024):.2f} MB"
 
     def count_files(self, path):
-        """
-        Count the total number of files in a directory, excluding certain files.
-
-        Args:
-            path (str): Directory to scan.
-
-        Returns:
-            int: Number of files found.
-        """
         count = 0
         for _, _, files in os.walk(path):
             for f in files:
-                if f.lower() in self.exclude_files:
+                fl = f.lower()
+                if any(fnmatch.fnmatch(fl, p) for p in self.exclude_files):
                     continue
                 count += 1
         return count
 
     def scan_dir(self, path, total_files, on_progress=None, on_log=None):
-        """
-        Scan directory and yield file access info for each file.
-
-        Args:
-            path (str): Directory to scan.
-            total_files (int): Total number of files for progress calculation.
-            on_progress (callable): Optional callback for progress updates.
-            on_log (callable): Optional callback for log messages.
-
-        Yields:
-            tuple: (last_access_time, file_size, file_path)
-        """
+        """Yield (atime, size, path) for every non-excluded file under path."""
         scanned = 0
         for root, _, files in os.walk(path):
             for f in files:
-                if f.lower() in self.exclude_files:
+                fl = f.lower()
+                if any(fnmatch.fnmatch(fl, p) for p in self.exclude_files):
                     continue
                 full_path = os.path.join(root, f)
                 try:
@@ -180,7 +109,8 @@ class BaseCacheCleaner:
         file_info = []
         for root, _, files in os.walk(self.path):
             for f in files:
-                if f.lower() in self.exclude_files:
+                fl = f.lower()
+                if any(fnmatch.fnmatch(fl, p) for p in self.exclude_files):
                     continue
                 fp = os.path.join(root, f)
                 try:
@@ -193,11 +123,11 @@ class BaseCacheCleaner:
 
     def clean(self, on_log, on_progress):
         """
-        Perform the cache cleaning operation.
-
-        Args:
-            on_log (callable): Function to call with log messages.
-            on_progress (callable): Function to call with progress updates.
+        Perform the cache cleaning operation in four phases:
+          1. Scan  — walk the cache directory and build a SQLite index
+          2. Plan  — identify the oldest files that satisfy the removal target
+          3. Record — write the candidate list to a text file on disk
+          4. Execute — delete from the text file using concurrent workers
         """
         mode = "DRY RUN" if self.dry_run else "ACTUAL DELETION"
         on_log(f"Starting cache clean operation ({mode})...")
@@ -214,10 +144,10 @@ class BaseCacheCleaner:
             size_to_remove = (self.high_thresh * disk_total / 100) - disk_free
             on_log(f"Need to free {self.get_mb(size_to_remove)} to reach {self.high_thresh}% free.")
 
+        # ── Phase 1: Scan ────────────────────────────────────────────────────
         on_progress(-1)
-        on_log("Setting up SQLite database for file metadata...")
+        on_log("Phase 1/4: Scanning files into database...")
 
-        # Unique filename per run prevents collisions when multiple instances run
         db_path = os.path.join(APPDATA_DIR, f'p4cleaner_{os.getpid()}_{int(time.time())}.db')
         if os.path.exists(db_path):
             os.remove(db_path)
@@ -225,31 +155,36 @@ class BaseCacheCleaner:
         conn = sqlite3.connect(db_path)
         try:
             c = conn.cursor()
-            c.execute("PRAGMA journal_mode=WAL")
+            c.execute("PRAGMA synchronous=OFF")      # safe: temp DB, never recovered on crash
+            c.execute("PRAGMA cache_size=-65536")  # 64 MB page cache
+            c.execute("PRAGMA temp_store=MEMORY")
             c.execute("CREATE TABLE files (atime REAL, size INTEGER, path TEXT)")
-            c.execute("CREATE INDEX idx_atime ON files (atime)")
             conn.commit()
 
-            # Count files first so scan_dir can report accurate progress
-            total_files = self.count_files(self.path)
             insert_batch = []
-            SCAN_BATCH = 5000
-            for atime, size, path in self.scan_dir(self.path, total_files, on_progress, on_log):
+            SCAN_BATCH = 50000
+            scanned = 0
+            for atime, size, path in self.scan_dir(self.path, None, None, on_log):
                 insert_batch.append((atime, size, path))
+                scanned += 1
                 if len(insert_batch) >= SCAN_BATCH:
                     c.executemany("INSERT INTO files VALUES (?, ?, ?)", insert_batch)
                     conn.commit()
                     insert_batch.clear()
+                    on_log(f"  Scanned {scanned:,} files...")
             if insert_batch:
                 c.executemany("INSERT INTO files VALUES (?, ?, ?)", insert_batch)
                 conn.commit()
 
+            on_log(f"  Building sort index on {scanned:,} files...")
+            c.execute("CREATE INDEX idx_atime ON files (atime)")
+            conn.commit()
+
             c.execute("SELECT COUNT(*), SUM(size) FROM files")
             file_count, total_size = c.fetchone()
             total_size = total_size or 0
-            on_log(f"Indexed {file_count} files ({self.get_mb(total_size)}) in database.")
+            on_log(f"Phase 1/4 done: {file_count:,} files ({self.get_mb(total_size)}) indexed.")
 
-            # Folder mode: derive removal target from SQLite aggregate — no Python list needed
             if not self.drive_mode:
                 target_size = total_size * self.folder_percent_keep // 100
                 size_to_remove = total_size - target_size
@@ -257,13 +192,43 @@ class BaseCacheCleaner:
                     on_log("Cache size is within the configured percentage, no action taken.")
                     on_progress(100)
                     return
-                on_log(f"Will reduce cache to {self.folder_percent_keep}% of current size (target: {self.get_mb(target_size)}).")
-                on_log(f"Need to remove {self.get_mb(size_to_remove)}.")
+                on_log(f"Will reduce cache to {self.folder_percent_keep}% of current size "
+                       f"(target: {self.get_mb(target_size)}).")
 
-            # Delete oldest files in parallel batches until the space target is met.
-            # 10 concurrent workers saturate network/SAN I/O without overwhelming it.
-            # Log every LOG_INTERVAL deletions — per-file logging floods the Qt signal
-            # queue at millions-of-files scale and is the primary cause of slow runs.
+            assert size_to_remove is not None  # always set above; narrows type for checker
+            on_log(f"Phase 2/4: Identifying candidates (need to free {self.get_mb(size_to_remove)})...")
+            plan_path = os.path.join(APPDATA_DIR, f'p4cleaner_plan_{os.getpid()}_{int(time.time())}.txt')
+            plan_size = 0
+            plan_count = 0
+
+            plan_cursor = conn.cursor()
+            plan_cursor.execute("SELECT path, size FROM files ORDER BY atime ASC")
+            with open(plan_path, 'w', encoding='utf-8') as pf:
+                for path, size in plan_cursor:
+                    if plan_size >= size_to_remove:
+                        break
+                    pf.write(f"{path}\t{size}\n")
+                    plan_size += size
+                    plan_count += 1
+            plan_cursor.close()
+
+            self.last_plan_path = plan_path
+            on_log(f"Phase 2/4 done: {plan_count:,} files ({self.get_mb(plan_size)}) identified.")
+            on_log(f"Phase 3/4: Candidate list saved to: {plan_path}")
+
+            c.close()
+            conn.close()
+            try:
+                os.remove(db_path)
+            except FileNotFoundError:
+                pass
+
+            if self.dry_run:
+                on_log("Dry run complete — no files deleted. Review the candidate list above.")
+                on_progress(100)
+                return
+
+            on_log(f"Phase 4/4: Deleting {plan_count:,} files...")
             removed_size = 0
             deleted = 0
             failed = 0
@@ -271,66 +236,46 @@ class BaseCacheCleaner:
             DELETE_WORKERS = 10
             LOG_INTERVAL = 1000
 
+            def _read_plan_batches():
+                with open(plan_path, 'r', encoding='utf-8') as pf:
+                    batch = []
+                    for line in pf:
+                        parts = line.rstrip('\n').split('\t', 1)
+                        if len(parts) == 2:
+                            batch.append((parts[0], int(parts[1])))
+                            if len(batch) >= DELETE_BATCH:
+                                yield batch
+                                batch = []
+                    if batch:
+                        yield batch
+
             with ThreadPoolExecutor(max_workers=DELETE_WORKERS) as executor:
-                while removed_size < size_to_remove:
+                for batch in _read_plan_batches():
                     if self._stop_event.is_set():
                         on_log("Stop requested, cleaning aborted.")
                         break
-                    c.execute("SELECT atime, size, path FROM files ORDER BY atime ASC LIMIT ?", (DELETE_BATCH,))
-                    batch = c.fetchall()
-                    if not batch:
-                        break
-
-                    if self.dry_run:
-                        # Sequential in dry-run — just reporting, no I/O to parallelise
-                        paths_logged = []
-                        for _, size, path in batch:
-                            if removed_size >= size_to_remove:
-                                break
-                            on_log(f"Would delete: {path}")
+                    future_to_info = {
+                        executor.submit(os.remove, path): (path, size)
+                        for path, size in batch
+                    }
+                    for future in as_completed(future_to_info):
+                        path, size = future_to_info[future]
+                        exc = future.exception()
+                        if exc is None:
                             removed_size += size
                             deleted += 1
-                            on_progress(round(100 * removed_size / size_to_remove, 1))
-                            paths_logged.append((path,))
-                        if paths_logged:
-                            c.executemany("DELETE FROM files WHERE path = ?", paths_logged)
-                            conn.commit()
-                    else:
-                        # Pre-select only the files needed to reach the target
-                        to_delete = []
-                        prospective = removed_size
-                        for _, size, path in batch:
-                            if prospective >= size_to_remove:
-                                break
-                            to_delete.append((size, path))
-                            prospective += size
+                            if deleted % LOG_INTERVAL == 0:
+                                on_log(f"  Deleted {deleted:,}/{plan_count:,} files "
+                                       f"({self.get_mb(removed_size)})...")
+                        else:
+                            failed += 1
+                            on_log(f"Failed: {path} — {exc}")
+                    on_progress(round(100 * deleted / plan_count, 1) if plan_count else 100.0)
 
-                        # Submit all to the pool; collect results as they complete
-                        future_to_info = {
-                            executor.submit(os.remove, path): (size, path)
-                            for size, path in to_delete
-                        }
-                        paths_deleted = []
-                        for future in as_completed(future_to_info):
-                            size, path = future_to_info[future]
-                            exc = future.exception()
-                            if exc is None:
-                                removed_size += size
-                                deleted += 1
-                                paths_deleted.append((path,))
-                                if deleted % LOG_INTERVAL == 0:
-                                    on_log(f"Deleted {deleted} files ({self.get_mb(removed_size)} of {self.get_mb(size_to_remove)})...")
-                            else:
-                                failed += 1
-                                on_log(f"Failed to delete: {path} - {exc}")
-                        on_progress(round(100 * removed_size / size_to_remove, 1))
-                        if paths_deleted:
-                            c.executemany("DELETE FROM files WHERE path = ?", [(p,) for p in paths_deleted])
-                            conn.commit()
-
-            action = "would be removed" if self.dry_run else "removed"
-            fail_note = f", {failed} failed" if failed else ""
-            on_log(f"Total of {self.get_mb(removed_size)} {action}. Deleted {deleted} files{fail_note}.")
+            fail_note = f", {failed:,} failed" if failed else ""
+            on_log(f"Phase 4/4 done: {self.get_mb(removed_size)} removed, "
+                   f"{deleted:,} files deleted{fail_note}.")
+            on_log(f"Audit log retained at: {plan_path}")
             on_progress(100)
 
         except Exception as e:
@@ -341,90 +286,102 @@ class BaseCacheCleaner:
                 conn.close()
             except Exception:
                 pass
-            for suffix in ('', '-wal', '-shm'):
-                try:
-                    os.remove(db_path + suffix)
-                except FileNotFoundError:
-                    pass
+            try:
+                os.remove(db_path)
+            except (FileNotFoundError, PermissionError):
+                pass
 
-
-# --- CLI Threaded Worker ---
 
 class ThreadedCacheCleaner(threading.Thread, BaseCacheCleaner):
-    """
-    Threaded cache cleaner for CLI/headless mode using Python threading.
-    """
+    """CLI worker — runs clean() in a background thread, printing to stdout."""
 
     def __init__(self, path, low_thresh, high_thresh, folder_keep_percent, drive_mode, dry_run=False,
                  exclude_files=None):
-        """
-        Initialize the threaded cleaner.
-
-        Args:
-            path (str): The directory to clean.
-            low_thresh (int): Minimum required disk free percentage.
-            high_thresh (int): Target disk free percentage after cleaning.
-            folder_keep_percent (int): Target disk free percentage after cleaning.
-            drive_mode (bool): Drive mode to use.
-            dry_run (bool): If True, simulate cleaning without deleting files.
-            exclude_files (list[str]): Files to exclude.
-        """
         threading.Thread.__init__(self)
         BaseCacheCleaner.__init__(self, path, low_thresh, high_thresh, folder_keep_percent, drive_mode, dry_run,
                                   exclude_files=list(exclude_files or []))
 
     def run(self):
-        """
-        Run the cleaning logic with print/log output.
-        """
-
         def print_and_log(msg):
             print(msg)
             logging.info(msg)
-
         self.clean(print_and_log, lambda _: None)
 
 
-# --- Qt QThread Worker ---
-
-class QtCacheCleanerWorker(QThread, BaseCacheCleaner):
-    """
-    QThread-based cache cleaner for GUI mode, emitting Qt signals for progress and logs.
-    """
+class QtCacheCleanerWorker(QThread):
+    """GUI worker — runs clean() in a QThread, forwarding output via Qt signals."""
     progress_signal = Signal(float)
     log_signal = Signal(str)
     done_signal = Signal()
 
     def __init__(self, path, low_thresh, high_thresh, folder_keep_percent, drive_mode, dry_run=False,
                  exclude_files=None):
-        """
-        Initialize the QThread worker.
-
-        Args:
-            path (str): The directory to clean.
-            low_thresh (int): Minimum required disk free percentage.
-            high_thresh (int): Target disk free percentage after cleaning.
-            folder_keep_percent (int): Target disk free percentage after cleaning.
-            drive_mode (bool): Drive mode to use.
-            dry_run (bool): If True, simulate cleaning without deleting files.
-            exclude_files (list[str]): Files to exclude.
-        """
         QThread.__init__(self)
-        BaseCacheCleaner.__init__(self,
-                                  path,
-                                  low_thresh,
-                                  high_thresh,
-                                  folder_keep_percent,
-                                  drive_mode,
-                                  dry_run,
-                                  exclude_files=list(exclude_files or []))
+        self._cleaner = BaseCacheCleaner(path, low_thresh, high_thresh, folder_keep_percent, drive_mode, dry_run,
+                                         exclude_files=list(exclude_files or []))
+
+    def request_stop(self):
+        self._cleaner.request_stop()
 
     def run(self):
-        """
-        Run the cleaning logic, emitting Qt signals for UI updates.
-        """
-        self.clean(self.log_signal.emit, self.progress_signal.emit)
+        self._cleaner.clean(self.log_signal.emit, self.progress_signal.emit)
         self.done_signal.emit()
+
+
+# --- Log pop-out window ---
+
+class ArrowSpinBox(QSpinBox):
+    """QSpinBox that shows an arrow cursor over the +/- buttons instead of the I-beam."""
+
+    def mouseMoveEvent(self, event):
+        over_buttons = event.position().x() >= self.width() - 18
+        self.setCursor(Qt.CursorShape.ArrowCursor if over_buttons else Qt.CursorShape.IBeamCursor)
+        super().mouseMoveEvent(event)
+
+
+class LogPopOut(QDialog):
+    """Detached, resizable log viewer that mirrors the main log in real time."""
+
+    def __init__(self, parent: "P4PCleanUI", current_html: str, stylesheet: str):
+        super().__init__(parent, Qt.WindowType.Window)
+        self._owner = parent  # typed reference used in closeEvent
+        self.setWindowTitle("Cleaning Log — Perforce Cache Cleaner")
+        self.resize(900, 600)
+        self.setStyleSheet(stylesheet)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
+
+        btn_row = QHBoxLayout()
+        open_btn = QPushButton("Open Log File")
+        open_btn.setObjectName("secondary_btn")
+        open_btn.clicked.connect(lambda: parent._open_file(LOG_FILE))
+        clear_btn = QPushButton("Clear")
+        clear_btn.setObjectName("secondary_btn")
+        clear_btn.clicked.connect(self._clear)
+        btn_row.addStretch()
+        btn_row.addWidget(open_btn)
+        btn_row.addWidget(clear_btn)
+
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setFont(QFont("Consolas", 10))
+        self.log_text.setHtml(current_html)
+
+        layout.addLayout(btn_row)
+        layout.addWidget(self.log_text)
+        self.setLayout(layout)
+
+    def append(self, message: str):
+        self.log_text.append(message)
+
+    def _clear(self):
+        self.log_text.clear()
+
+    def closeEvent(self, event):
+        self._owner._popout = None
+        event.accept()
 
 
 # --- GUI ---
@@ -435,42 +392,42 @@ class P4PCleanUI(QWidget):
     """
 
     def __init__(self):
-        """
-        Initialize the main GUI window and widgets.
-        """
         super().__init__()
         self.setWindowTitle("Perforce Proxy Cache Cleaner")
-        self.resize(650, 500)
+        self.resize(700, 850)
         self.dark_mode = False
+        self._popout: LogPopOut | None = None
 
         self.exclude_files = list(DEFAULT_EXCLUDE_FILES)
 
-        # Main layout
         main_layout = QVBoxLayout()
-        main_layout.setSpacing(20)
-        main_layout.setContentsMargins(30, 30, 30, 30)
+        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(20, 20, 20, 20)
 
-        # Theme toggle button
-        self.theme_button = QPushButton("🌙 Dark Mode")
-        self.theme_button.setCheckable(True)
-        self.theme_button.setMaximumWidth(140)
-        self.theme_button.clicked.connect(self.toggle_theme)
-        main_layout.addWidget(self.theme_button, alignment=Qt.AlignmentFlag.AlignRight)
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
 
-        # Header
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
         header = QLabel("Perforce Proxy Cache Cleaner")
-        header.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
-        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subheader = QLabel("Free your disk by automatically removing old cache files.")
-        subheader.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subheader.setStyleSheet("color: #666; margin-bottom: 10px;")
-        main_layout.addWidget(header)
-        main_layout.addWidget(subheader)
+        header.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        subheader = QLabel("Automatically remove the oldest unused cache files to reclaim disk space.")
+        subheader.setObjectName("subheader_label")
+        title_col.addWidget(header)
+        title_col.addWidget(subheader)
 
-        # Group: Cache Path
+        self.theme_button = QPushButton("🌙  Dark")
+        self.theme_button.setObjectName("theme_btn")
+        self.theme_button.setCheckable(True)
+        self.theme_button.setFixedSize(80, 30)
+        self.theme_button.clicked.connect(self.toggle_theme)
+
+        header_row.addLayout(title_col)
+        header_row.addStretch()
+        header_row.addWidget(self.theme_button, alignment=Qt.AlignmentFlag.AlignTop)
+        main_layout.addLayout(header_row)
+
         path_group = QGroupBox("Cache Location")
-
-        # Cache Root
         path_layout = QHBoxLayout()
         self.path_input = QLineEdit()
         self.path_input.setPlaceholderText("Select cache directory...")
@@ -481,7 +438,6 @@ class P4PCleanUI(QWidget):
         path_layout.addWidget(self.browse_button)
         path_group.setLayout(path_layout)
 
-        # Group: Cache Mode Radio
         mode_group = QGroupBox("Cache Type")
         mode_layout = QHBoxLayout()
         self.drive_radio = QRadioButton("Cache is mapped to entire drive")
@@ -494,62 +450,81 @@ class P4PCleanUI(QWidget):
         mode_layout.addWidget(self.folder_radio)
         mode_group.setLayout(mode_layout)
 
-        # Group: Cleaning Options
         options_group = QGroupBox("Cleaning Options")
         options_layout = QHBoxLayout()
-        self.low_thresh_input = QSpinBox()
+
+        drive_page = QWidget()
+        drive_page_layout = QHBoxLayout(drive_page)
+        drive_page_layout.setContentsMargins(0, 0, 0, 0)
+        self.low_thresh_input = ArrowSpinBox()
         self.low_thresh_input.setRange(1, 100)
         self.low_thresh_input.setValue(20)
         self.low_thresh_input.setSuffix("% (min free)")
-        self.high_thresh_input = QSpinBox()
+        self.high_thresh_input = ArrowSpinBox()
         self.high_thresh_input.setRange(1, 100)
         self.high_thresh_input.setValue(30)
         self.high_thresh_input.setSuffix("% (target free)")
+        drive_page_layout.addWidget(self.low_thresh_input)
+        drive_page_layout.addWidget(self.high_thresh_input)
+        drive_page_layout.addStretch()
 
-        # Only show these when "Shared" (folder_radio) is picked
+        folder_page = QWidget()
+        folder_page_layout = QHBoxLayout(folder_page)
+        folder_page_layout.setContentsMargins(0, 0, 0, 0)
         self.percent_label = QLabel("Keep % of cache data:")
-        self.percent_spin = QSpinBox()
+        self.percent_spin = ArrowSpinBox()
         self.percent_spin.setMinimum(1)
         self.percent_spin.setMaximum(100)
         self.percent_spin.setValue(80)
+        folder_page_layout.addWidget(self.percent_label)
+        folder_page_layout.addWidget(self.percent_spin)
+        folder_page_layout.addStretch()
+
+        # Stack holds both pages — layout never reflows when switching
+        self.mode_stack = QStackedWidget()
+        self.mode_stack.addWidget(drive_page)
+        self.mode_stack.addWidget(folder_page)
 
         self.dry_run_checkbox = QCheckBox("Dry Run (simulate only)")
 
-        options_layout.addWidget(self.low_thresh_input)
-        options_layout.addWidget(self.high_thresh_input)
-        options_layout.addWidget(self.percent_label)
-        options_layout.addWidget(self.percent_spin)
+        options_layout.addWidget(self.mode_stack)
         options_layout.addWidget(self.dry_run_checkbox)
         options_group.setLayout(options_layout)
 
-        # Group: Excluded Files
-        exclude_group = QGroupBox("Excluded Files (do not delete)")
+        self.exclude_group = QGroupBox(self._exclude_group_title())
         exclude_layout = QVBoxLayout()
+        exclude_layout.setSpacing(6)
+
+        hint = QLabel("Glob patterns supported: exact name, *.ext, prefix_*, etc. Matched case-insensitively against filenames.")
+        hint.setObjectName("hint_label")
+        hint.setWordWrap(True)
 
         self.exclude_list_widget = QListWidget()
-        self.exclude_list_widget.setMinimumHeight(130)
+        self.exclude_list_widget.setMinimumHeight(90)
+        self.exclude_list_widget.setMaximumHeight(120)
         for item in self.exclude_files:
             self.exclude_list_widget.addItem(item)
 
-        # Add controls
         add_layout = QHBoxLayout()
         self.exclude_input = QLineEdit()
-        self.exclude_input.setPlaceholderText("Add file or pattern...")
+        self.exclude_input.setPlaceholderText("e.g.  *.lbr  or  cache_tmp_*  or  exact_file.txt")
         add_btn = QPushButton("Add")
-        remove_btn = QPushButton("Remove Selected")
+        add_btn.setObjectName("secondary_btn")
+        remove_btn = QPushButton("Remove")
+        remove_btn.setObjectName("secondary_btn")
         add_layout.addWidget(self.exclude_input)
         add_layout.addWidget(add_btn)
         add_layout.addWidget(remove_btn)
 
+        exclude_layout.addWidget(hint)
         exclude_layout.addWidget(self.exclude_list_widget)
         exclude_layout.addLayout(add_layout)
-        exclude_group.setLayout(exclude_layout)
+        self.exclude_group.setLayout(exclude_layout)
 
-        # Add handlers
         add_btn.clicked.connect(self.add_exclude_file)
         remove_btn.clicked.connect(self.remove_exclude_file)
+        self.exclude_input.returnPressed.connect(self.add_exclude_file)
 
-        # Start Button
         self.start_button = QPushButton("Start Cleaning")
         self.start_button.setStyleSheet(
             "QPushButton {background-color: #2d89ef; color: white; border-radius: 6px; padding: 8px 20px; font-size: 16px;} QPushButton:disabled {background-color: #999;}"
@@ -557,45 +532,62 @@ class P4PCleanUI(QWidget):
         self.start_button.setFixedHeight(40)
         self.start_button.clicked.connect(self.start_cleaning)
 
-        # Progress
-        progress_group = QGroupBox("Progress")
-        progress_layout = QVBoxLayout()
+        status_row = QHBoxLayout()
+        self.status_bar = QLabel("Waiting to start...")
+        self.status_bar.setObjectName("status_label")
+        self.status_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.progress = QProgressBar()
         self.progress.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        progress_layout.addWidget(self.progress)
-        progress_group.setLayout(progress_layout)
+        self.progress.setFixedWidth(280)
+        status_row.addWidget(self.status_bar)
+        status_row.addWidget(self.progress)
 
-        # Logs
         logs_group = QGroupBox("Logs")
         logs_layout = QVBoxLayout()
+        logs_layout.setSpacing(6)
+
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setFont(QFont("Consolas", 10))
+        self.log_output.setMinimumHeight(200)
+
+        log_btn_row = QHBoxLayout()
+        self.open_plan_button = QPushButton("Open Plan File")
+        self.open_plan_button.setObjectName("secondary_btn")
+        self.open_plan_button.setEnabled(False)
+        self.open_plan_button.clicked.connect(self._open_plan_file)
+        open_log_btn = QPushButton("Open Log File")
+        open_log_btn.setObjectName("secondary_btn")
+        open_log_btn.clicked.connect(lambda: self._open_file(LOG_FILE))
+        popout_btn = QPushButton("Pop Out")
+        popout_btn.setObjectName("secondary_btn")
+        popout_btn.clicked.connect(self._show_popout)
+        clear_log_btn = QPushButton("Clear")
+        clear_log_btn.setObjectName("secondary_btn")
+        clear_log_btn.clicked.connect(self.log_output.clear)
+        log_btn_row.addStretch()
+        log_btn_row.addWidget(self.open_plan_button)
+        log_btn_row.addWidget(open_log_btn)
+        log_btn_row.addWidget(popout_btn)
+        log_btn_row.addWidget(clear_log_btn)
+
+        logs_layout.addLayout(log_btn_row)
         logs_layout.addWidget(self.log_output)
         logs_group.setLayout(logs_layout)
 
-        # Status label (replaces QStatusBar — QStatusBar is a QMainWindow widget
-        # and renders a platform-native background inside QWidget layouts)
-        self.status_bar = QLabel("Waiting to start...")
-        self.status_bar.setObjectName("status_label")
-
-        # Add to main layout
         main_layout.addWidget(path_group)
         main_layout.addWidget(mode_group)
         main_layout.addWidget(options_group)
-        main_layout.addWidget(exclude_group)
+        main_layout.addWidget(self.exclude_group)
         main_layout.addWidget(self.start_button)
-        main_layout.addWidget(progress_group)
-        main_layout.addWidget(logs_group)
-        main_layout.addWidget(self.status_bar)
+        main_layout.addWidget(logs_group, stretch=1)
+        main_layout.addLayout(status_row)
         self.setLayout(main_layout)
 
-        # Connect mode switching to UI update
         self.drive_radio.toggled.connect(self.update_ui_fields)
         self.folder_radio.toggled.connect(self.update_ui_fields)
         self.update_ui_fields()
 
-        # Theme
         self.light_stylesheet = load_stylesheet(resource_path("resources/css/light_mode.css"))
         self.dark_stylesheet = load_stylesheet(resource_path("resources/css/dark_mode.css"))
         self.setStyleSheet(self.light_stylesheet)
@@ -631,49 +623,37 @@ class P4PCleanUI(QWidget):
                 pass
 
     def toggle_theme(self):
-        """
-        Switch between light and dark mode.
-        """
         self.dark_mode = not self.dark_mode
         if self.dark_mode:
             self.setStyleSheet(self.dark_stylesheet)
-            self.theme_button.setText("☀️ Light Mode")
+            self.theme_button.setText("☀️  Light")
         else:
             self.setStyleSheet(self.light_stylesheet)
-            self.theme_button.setText("🌙 Dark Mode")
+            self.theme_button.setText("🌙  Dark")
         self._apply_title_bar_theme(self.dark_mode)
 
+    def _exclude_group_title(self) -> str:
+        n = len(self.exclude_files)
+        return f"Excluded Files — {n} pattern{'s' if n != 1 else ''}"
+
     def add_exclude_file(self):
-        text = self.exclude_input.text().strip()
+        text = self.exclude_input.text().strip().lower()
         if text and text not in self.exclude_files:
             self.exclude_files.append(text)
             self.exclude_list_widget.addItem(text)
             self.exclude_input.clear()
+            self.exclude_group.setTitle(self._exclude_group_title())
 
     def remove_exclude_file(self):
         for item in self.exclude_list_widget.selectedItems():
             self.exclude_files.remove(item.text())
             self.exclude_list_widget.takeItem(self.exclude_list_widget.row(item))
+        self.exclude_group.setTitle(self._exclude_group_title())
 
     def update_ui_fields(self):
-        if self.drive_radio.isChecked():
-            self.low_thresh_input.setVisible(True)
-            self.high_thresh_input.setVisible(True)
-            self.percent_label.setVisible(False)
-            self.percent_spin.setVisible(False)
-        else:
-            self.low_thresh_input.setVisible(False)
-            self.high_thresh_input.setVisible(False)
-            self.percent_label.setVisible(True)
-            self.percent_spin.setVisible(True)
+        self.mode_stack.setCurrentIndex(0 if self.drive_radio.isChecked() else 1)
 
     def on_progress_update(self, value):
-        """
-        Update the progress bar and label.
-
-        Args:
-            value (int/float): The progress percentage, or -1 for indeterminate.
-        """
         if value == -1:
             self.progress.setRange(0, 0)
             self.status_bar.setText("Analyzing files...")
@@ -685,28 +665,42 @@ class P4PCleanUI(QWidget):
             self.status_bar.setText("Processing files...")
 
     def browse_path(self):
-        """
-        Show a dialog to select a directory for cleaning.
-        """
         dir_path = QFileDialog.getExistingDirectory(self, "Select Cache Directory")
         if dir_path:
             self.path_input.setText(dir_path)
 
     def append_log(self, message):
-        """
-        Append a log message to the log output widget and the log file.
-        Only the most recent 100 lines are shown in the GUI.
-        Args:
-            message (str): The message to log.
-        """
         self._gui_log_buffer.append(message)
-        self.log_output.append(message)  # O(1), renders HTML, auto-scrolls
+        self.log_output.append(message)
+        if self._popout is not None:
+            self._popout.append(message)
         logging.info(message)
 
+    def _open_file(self, path: str):
+        if not os.path.exists(path):
+            return
+        if hasattr(os, "startfile"):
+            os.startfile(path)  # type: ignore[attr-defined]
+        else:
+            import subprocess
+            subprocess.Popen(["xdg-open", path])
+
+    def _open_plan_file(self):
+        plan_path = getattr(getattr(self, "cleaner", None), "_cleaner", None)
+        plan_path = getattr(plan_path, "last_plan_path", None)
+        if plan_path:
+            self._open_file(plan_path)
+
+    def _show_popout(self):
+        if self._popout is not None and self._popout.isVisible():
+            self._popout.raise_()
+            self._popout.activateWindow()
+            return
+        stylesheet = self.dark_stylesheet if self.dark_mode else self.light_stylesheet
+        self._popout = LogPopOut(self, self.log_output.toHtml(), stylesheet)
+        self._popout.show()
+
     def start_cleaning(self):
-        """
-        Start the cleaning operation, using QThread worker.
-        """
         path = self.path_input.text().strip()
         if not os.path.isdir(path):
             self.append_log("<span style='color:red;font-weight:bold'>Invalid path.</span>")
@@ -734,29 +728,19 @@ class P4PCleanUI(QWidget):
         self.cleaner.start()
 
     def cleaning_done(self):
-        """
-        Called when cleaning is finished. Updates the UI.
-        """
         self.append_log("<b>Cleaning operation finished.</b>")
         self.status_bar.setText("Done.")
         self.start_button.setEnabled(True)
+        plan_path = getattr(getattr(self, "cleaner", None), "_cleaner", None)
+        plan_path = getattr(plan_path, "last_plan_path", None)
+        if plan_path and os.path.exists(plan_path):
+            self.open_plan_button.setEnabled(True)
+            self.open_plan_button.setToolTip(plan_path)
 
 
 # --- CLI entry point ---
 
 def run_headless(path, low_thresh, high_thresh, folder_percent_keep, drive_mode, dry_run, exclude_files):
-    """
-    Run the cache cleaner in CLI mode without GUI.
-
-    Args:
-        path (str): Directory to clean.
-        low_thresh (int): Minimum required disk free percent.
-        high_thresh (int): Target disk free percent.
-        drive_mode (bool): drive mode if its entire drive or just folder of a bigger drive.
-        folder_percent_keep (int): percentage of the space to be retained.
-        dry_run (bool): If True, simulate cleaning.
-        exclude_files (list): list of files to be excluded.
-    """
     if not os.path.isdir(path):
         print("Invalid path.")
         sys.exit(1)
@@ -856,9 +840,6 @@ def cli_edit_excluded():
 
 
 def main():
-    """
-    Main entry point for the application. Parses arguments and launches GUI or CLI.
-    """
     parser = argparse.ArgumentParser(description="Perforce Proxy Cache Cleaner")
     parser.add_argument('--path', type=str, help='Cache directory to analyze and clean')
     parser.add_argument('--low', type=int, default=20, help='Low disk free threshold percent (default: 20)')
@@ -873,7 +854,6 @@ def main():
     parser.add_argument('--edit-excluded', action='store_true', help='Interactively edit the excluded files list')
     args = parser.parse_args()
 
-    # CLI excluded files management
     if args.show_excluded:
         cli_show_excluded()
         return
@@ -895,7 +875,6 @@ def main():
     exclude_files = load_exclude_files()
 
     if args.path:
-        # Headless (CLI) mode
         run_headless(
             args.path,
             args.low,
@@ -906,7 +885,6 @@ def main():
             exclude_files=exclude_files
         )
     else:
-        # GUI mode
         app = QApplication(sys.argv)
         app.setWindowIcon(QIcon(resource_path("resources/icons/icon.png")))
         window = P4PCleanUI()
