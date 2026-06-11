@@ -6,6 +6,8 @@ on:
 
 jobs:
   build:
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -16,7 +18,7 @@ jobs:
             artifact_glob: dist/*.exe
           - os: ubuntu-latest
             binary_name: P4CacheCleaner-linux
-            artifact_glob: dist/P4CacheCleaner-linux
+            artifact_glob: dist/P4CacheCleaner-linux.bin
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -46,11 +48,11 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           pyinstaller --onefile --add-data "resources:resources" --name "${{ matrix.binary_name }}" p4p_cleaner_advanced.py
-          chmod +x "dist/${{ matrix.binary_name }}"
+          mv "dist/${{ matrix.binary_name }}" "dist/${{ matrix.binary_name }}.bin"
+          chmod +x "dist/${{ matrix.binary_name }}.bin"
 
       - name: Upload binary to Release
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.artifact_glob }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
