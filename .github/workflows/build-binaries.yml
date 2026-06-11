@@ -6,6 +6,8 @@ on:
 
 jobs:
   build:
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -52,5 +54,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.artifact_glob }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
